@@ -9,7 +9,7 @@
 
 <script>
 export default {
-  name: 'PinPage',
+  name: 'PinMarketing',
   data() {
     return {
       pin: '',
@@ -18,12 +18,12 @@ export default {
   },
   methods: {
     validatePin() {
-      if (this.pin === '') {
+      if (this.pin === 'Mkt') {
         const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
-        localStorage.setItem('accessGranted', 'true');
-        localStorage.setItem('accessExpiresAt', expiresAt.toString());
-        const redirectPath = localStorage.getItem('redirectAfterPin') || '/motorcredito';
-        localStorage.removeItem('redirectAfterPin');
+        localStorage.setItem('marketingAccessGranted', 'true');
+        localStorage.setItem('marketingAccessExpiresAt', expiresAt.toString());
+        const redirectPath = localStorage.getItem('redirectAfterPinMarketing') || '/marketing';
+        localStorage.removeItem('redirectAfterPinMarketing');
         this.$router.push(redirectPath);
     } else {
         this.error = 'PIN inválido';

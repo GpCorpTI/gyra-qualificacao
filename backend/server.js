@@ -14,8 +14,9 @@ function extractReportSummary(report) {
 
   const riskSet = new Set();
   const rules = [];
-  const sections = report?.sections || [];
+  let businessName = null;
 
+  const sections = report?.sections || [];
   sections.forEach(section => {
     (section.sectionDetails || []).forEach(detail => {
       const values = detail?.values || {};
@@ -33,19 +34,24 @@ function extractReportSummary(report) {
               const cleanDescription = rawDesc.replace(/\{\{.*?\}\}/g, '').trim();
               rules.push({
                 description: cleanDescription,
-                status: rule?.status?.value || ''
-              });
+                status: rule?.status?.value || ''});
             }
           });
         });
       });
+      if (!businessName) {
+        const candidate =
+          values.name;
+        if (candidate) businessName = String(candidate).trim();
+      }
     });
   });
 
   return {
     statusValue,
     risks: Array.from(riskSet),
-    rules
+    rules,
+    businessName
   };
 }
 // 🔐 Token
@@ -119,12 +125,14 @@ app.get('/api/report/:id', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     const reportId = req.params.id;
 
-    // 1) Opcional: checar se já está preenchido (evita UPDATE desnecessário)
+    // 1) Checar se já está preenchido (evita UPDATE desnecessário)
     const [rows] = await pool.execute(
       'SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1',
       [reportId]
     );
     const currentStatus = rows.length ? (rows[0].status_value || '').trim() : '';
+    const currentName   = rows.length ? (rows[0].business_name || '').trim() : '';
+    
     const isEmpty = currentStatus === '';
     const isPending = currentStatus.toUpperCase() === 'PENDING';
     const updateNeeded = isEmpty || isPending;
@@ -136,32 +144,41 @@ app.get('/api/report/:id', async (req, res) => {
     );
     const fullReport = response.data;
 
-    // 3) Só extrai e tenta atualizar se ainda estiver vazio
+    const { statusValue, risks, rules, businessName } = extractReportSummary(fullReport);
+
+    // Atualiza resumo UMA vez (quando vazio/pendente)
     if (updateNeeded) {
-      const { statusValue, risks, rules } = extractReportSummary(fullReport);
-      const rulesToStore = (rules || []).map(r => r.description);
-      try {
-        await pool.execute(
-          `UPDATE cnpj_reports
-              SET status_value = ?,
-                  risks = ?,
-                  rules = ?
-            WHERE report_id = ?
-              AND (
-                    status_value IS NULL
-                 OR status_value = ''
-                 OR UPPER(status_value) = 'PENDING'
-              )`,
-          [
-            statusValue || null,
-            JSON.stringify(risks || []),
-            JSON.stringify(rulesToStore),
-            reportId
-          ]
-        );
-      } catch (dbErr) {
-        console.warn('⚠️ Falha ao atualizar resumo no banco:', dbErr.message);
-      }
+      const rulesToStore = (rules || []).map(r => ({ description: r.description, status: r.status }));
+      await pool.execute(
+        `UPDATE cnpj_reports
+            SET status_value = ?,
+                risks = ?,
+                rules = ?
+          WHERE report_id = ?
+            AND (
+                  status_value IS NULL
+               OR status_value = ''
+               OR UPPER(status_value) = 'PENDING'
+               OR UPPER(status_value) = 'PENDENTE'
+            )`,
+        [
+          statusValue || null,
+          JSON.stringify(risks || []),
+          JSON.stringify(rulesToStore),
+          reportId
+        ]
+      );
+    }
+
+    // Garante salvar o NOME se ainda não estiver salvo (independente do status)
+    if (!currentName && businessName) {
+      await pool.execute(
+        `UPDATE cnpj_reports
+            SET business_name = ?
+          WHERE report_id = ?
+            AND (business_name IS NULL OR business_name = '')`,
+        [businessName, reportId]
+      );
     }
 
     // 4) Retorna o relatório completo
@@ -177,7 +194,7 @@ app.get('/api/report/:id', async (req, res) => {
 app.get('/api/reports', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT id, cnpj, report_id, sector, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC'
+      'SELECT id, cnpj, business_name, report_id, sector, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC'
     );
     res.json(rows);
   } catch (err) {
@@ -189,10 +206,11 @@ app.get('/api/reports', async (req, res) => {
 import * as XLSX from 'xlsx'
 app.get('/api/reports.xlsx', async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT id, cnpj, report_id, sector, status_value, risks, rules, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC')
+    const [rows] = await pool.execute('SELECT id, cnpj, business_name, report_id, sector, status_value, risks, rules, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC')
 
     const data = rows.map(r => ({
       CNPJ: r.cnpj,
+      Nome: r.business_name,
       ReportID: r.report_id,
       Setor: r.sector || '',
       Status: r.status_value,

@@ -24,6 +24,11 @@
 
 
     <div class="info-panel" v-if="mainStatus || riskInfo.length || policySummaries.length">
+      
+      <div v-if="companyName" class="company-header">
+        <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
+        <p v-if="cnpj" class="company-cnpj">CNPJ: {{ cnpj }}</p>
+      </div>
       <h3>Status Geral:</h3>
       <p><strong>{{ translateStatus(mainStatus) }}</strong></p>
 
@@ -38,108 +43,61 @@
 </template>
 
 <script>
-import axios from 'axios';
+import { getToken, createReport, getReportById } from '@/services/gyraApi';
+import { extractReportData, translateStatus, cleanDescription } from '@/utils/reportUtils';
 
 export default {
-name: 'MarketingPage',
-data() {
-  return {
-    cnpj: '',              
-    loading: false,        
-    error: '',             
-    report: null,          
-    mainStatus: '',        
-    policySummaries: [],
-    riskInfo: []
-  };
-},
-methods: {
-
-  translateStatus(status) {
-    const map = {
-      APPROVED: 'Aprovado',
-      REJECTED: 'Rejeitado',
-      ALERT: 'Alerta',
-      DENIED: 'Negado',
-      PENDING: 'Pendente, pressione "CONSULTAR" novamente em 30 segundos',
-      NOT_EXECUTED: 'Não Processado',
-      '': 'Desconhecido'
+  name: 'MarketingPage',
+  data() {
+    return {
+      cnpj: '',
+      loading: false,
+      error: '',
+      report: null,
+      companyName: '',
+      mainStatus: '',
+      riskInfo: [],
+      policySummaries: [],
     };
-    return map[status?.toUpperCase()] || status;
   },
+  methods: {
+    translateStatus,
+    cleanDescription,
 
-  cleanDescription(text) {
-  if (!text) return '';
-  return text.replace(/\{\{.*?\}\}/g, '').trim();
-  },
-  async handleCNPJSearch() {
-    this.loading = true;
-    this.error = '';
-    this.report = null;
+    async handleCNPJSearch() {
+      this.loading = true;
+      this.error = '';
+      this.report = null;
+      this.companyName = '';
 
-    try {
-      const tokenRes = await axios.post('http://192.168.87.87:3001/api/token');
-      console.log('🟢 Token received:', tokenRes.data);
-      const token = tokenRes.data.token;
+      try {
+        const token = await getToken();
 
-      const reportRes = await axios.post('http://192.168.87.87:3001/api/report', {
-        token,
-        cnpj: this.cnpj,
-        policyId: process.env.VUE_APP_GYRA_POLICY_ID,
-        sector: 'MKT'
-      });
-
-      console.log('📄 Report created:', reportRes.data);
-      const reportId = reportRes.data.id || reportRes.data.reportId;
-
-      const fullReport = await axios.get(
-        `http://192.168.87.87:3001/api/report/${reportId}`,
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      );
-
-      console.log("📦 Relatório completo:", fullReport.data);
-      this.report = fullReport.data;
-      this.mainStatus = fullReport.data.status?.value || 'Sem status';
-      const sections = fullReport.data.sections || [];
-      const extractedRules = [];
-      let risks = new Set();
-
-      sections.forEach(section => {
-        (section.sectionDetails || []).forEach(detail => {
-          const values = detail.values || {};
-
-          if (values.risk) {
-            risks.add(values.risk);
-          }
-
-          (values.policyRuleGroupResults || []).forEach(group => {
-            (group.policyRuleResultJoins || []).forEach(join => {
-              (join.policyRuleResults || []).forEach(rule => {
-                if (rule.status?.key === 'DENIED' || rule.status?.key === 'ALERT'){
-                  extractedRules.push({
-                    description: rule.descriptions,
-                    status: rule.status?.value
-                  });
-                }
-              });
-            });
-          });
+        const created = await createReport({
+          token,
+          cnpj: this.cnpj,
+          policyId: process.env.VUE_APP_GYRA_POLICY_ID,
+          sector: 'MKT', // marketing
         });
-      });
+        const reportId = created.reportId || created.id;
 
-    this.riskInfo = Array.from(risks);
-    this.policySummaries = extractedRules;
-    } catch (err) {
-      console.error('❌ Error in handleCNPJSearch:', err);
-      this.error = err.response?.data?.error || err.message;
-    } finally {
-      this.loading = false;
-    }
-  }
-}
+        const fullReport = await getReportById({ token, reportId });
+        this.report = fullReport;
+
+        const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
+        this.companyName = companyName;
+        this.mainStatus = mainStatus;
+        this.riskInfo = riskInfo;
+        this.policySummaries = policySummaries;
+      } catch (err) {
+        console.error('❌ Marketing.handleCNPJSearch:', err);
+        this.error = err.response?.data?.error || err.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+  },
 };
-
 </script>
+
 <style src="@/assets/styles/credito.css"></style>

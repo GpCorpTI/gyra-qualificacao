@@ -10,6 +10,7 @@
         <router-link class="link-box" :to="{ name: 'credito' }">📊 Análise de Crédito</router-link>
         <router-link class="link-box" :to="{ name: 'listarreport' }">📄 Listar Relatórios</router-link>
         <router-link class="link-box" :to="{ name: 'marketing' }"> 📣 Marketing</router-link>
+        <router-link class="link-box" :to="{ name: 'comercial' }"> 🚗 Comercial</router-link>
       </div>
     </div>
   </div>
