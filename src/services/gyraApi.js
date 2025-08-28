@@ -1,7 +1,7 @@
 // src/services/gyraApi.js
 import axios from 'axios';
 
-const BASE =  'http://192.168.87.87:3001';
+const BASE =  'http://192.168.87.79:3001';
 
 export async function getToken() {
   const { data } = await axios.post(`${BASE}/api/token`);

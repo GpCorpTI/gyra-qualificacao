@@ -18,7 +18,7 @@ export default {
   },
   methods: {
     validatePin() {
-      if (this.pin === 'Mkt') {
+      if (this.pin === 'Marketing@gp25') {
         const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
         localStorage.setItem('marketingAccessGranted', 'true');
         localStorage.setItem('marketingAccessExpiresAt', expiresAt.toString());
