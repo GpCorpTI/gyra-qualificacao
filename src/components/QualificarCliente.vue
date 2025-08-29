@@ -57,7 +57,6 @@ import { getToken, createReport, getReportById } from '@/services/gyraApi';
 import { extractReportData, translateStatus, cleanDescription } from '@/utils/reportUtils';
 
 export default {
-  name: 'Marketing',
   data() {
     return {
       cnpj: '',
