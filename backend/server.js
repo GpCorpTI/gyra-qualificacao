@@ -148,7 +148,7 @@ app.get('/api/report/:id', async (req, res) => {
 
     // Atualiza resumo UMA vez (quando vazio/pendente)
     if (updateNeeded) {
-      const rulesToStore = (rules || []).map(r => ({ description: r.description, status: r.status }));
+      const rulesToStore = (rules || []).map(r => r.description);
       await pool.execute(
         `UPDATE cnpj_reports
             SET status_value = ?,
