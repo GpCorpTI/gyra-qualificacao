@@ -54,6 +54,11 @@ body {
 }
 
 .sidebar {
+  position: fixed;
+  top: 0; 
+  left: 0; 
+  bottom: 0;               /* full height */
+  z-index: 20;
   width: 60px;
   background-color: #0d1b2a;
   display: flex;
