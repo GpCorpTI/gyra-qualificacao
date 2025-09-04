@@ -90,7 +90,7 @@ data() {
   },
 
     async loadReports() {
-      const res = await axios.get('http://192.168.87.87:3001/api/reports');
+      const res = await axios.get('http://192.168.87.79:3001/api/reports');
       this.reports = res.data;
     },
 
