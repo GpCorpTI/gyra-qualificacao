@@ -99,4 +99,5 @@ export default {
   },
 };
 </script>
+
 <style src="@/assets/styles/credito.css"></style>

@@ -16,7 +16,7 @@ export function cleanDescription(text) {
   return (text || '').replace(/\{\{.*?\}\}/g, '').trim();
 }
 
-// Only uses values.name (as you requested)
+
 export function extractCompanyName(report) {
   const sections = report?.sections || [];
   for (const sec of sections) {
