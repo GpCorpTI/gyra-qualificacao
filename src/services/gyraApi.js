@@ -20,3 +20,8 @@ export async function getReportById({ token, reportId }) {
   });
   return data;
 }
+
+export async function listReports() {
+  const { data } = await axios.get(`${BASE}/api/reports`);
+  return data; // [{ id, cnpj, report_id, sector, business_name, ... }]
+}
