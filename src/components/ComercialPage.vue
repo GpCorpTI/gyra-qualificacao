@@ -77,7 +77,7 @@ export default {
           token,
           cnpj: this.cnpj,
           policyId: process.env.VUE_APP_GYRA_POLICY_ID,
-          sector: 'MKT', // marketing
+          sector: 'CMRC', 
         });
         const reportId = created.reportId || created.id;
 
