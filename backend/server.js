@@ -1,60 +1,107 @@
+// server.js
 import express from 'express';
 import axios from 'axios';
-import dotenv from 'dotenv';
 import cors from 'cors';
-import { pool } from './db.js';   // ✅ usa o pool centralizado
+import dotenv from 'dotenv';
+import XLSX from 'xlsx';
+import { pool } from './db.js'; // ✅ use your existing pool
 
 dotenv.config();
+
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+// -------------------------
+// Helpers de CNPJ
+// -------------------------
+function normalizeCNPJNumeric(input = '') {
+  return String(input).replace(/\D/g, '');
+}
+
+function isValidCNPJ(cnpj) {
+  const s = normalizeCNPJNumeric(cnpj);
+  if (s.length !== 14) return false;
+  if (/^(\d)\1{13}$/.test(s)) return false;
+
+  const calcDV = (base) => {
+    let sum = 0, weight = 2;
+    for (let i = base.length - 1; i >= 0; i--) {
+      sum += Number(base[i]) * weight;
+      weight = (weight === 9) ? 2 : weight + 1;
+    }
+    const mod = sum % 11;
+    return (mod < 2) ? 0 : 11 - mod;
+  };
+
+  const d1 = calcDV(s.slice(0, 12));
+  const d2 = calcDV(s.slice(0, 12) + d1);
+  return s.endsWith(`${d1}${d2}`);
+}
+
+function formatCNPJMask(digits14) {
+  const s = String(digits14 || '');
+  if (s.length !== 14) return null;
+  return `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12,14)}`;
+}
+
+// Limpa "{{ ... }}" de descrições
+function cleanDescription(text) {
+  return (text || '').replace(/\{\{.*?\}\}/g, '').trim();
+}
+
+// Extrai company name de values.name no JSON do Gyra+
+function extractCompanyName(report) {
+  const sections = report?.sections || [];
+  for (const sec of sections) {
+    for (const det of (sec.sectionDetails || [])) {
+      const v = det?.values || {};
+      if (typeof v.name === 'string' && v.name.trim()) return v.name.trim();
+    }
+  }
+  return '';
+}
+
+// Monta sumário (status, riscos, regras)
 function extractReportSummary(report) {
   const statusValue = report?.status?.value || null;
-
-  const riskSet = new Set();
-  const rules = [];
-  let businessName = null;
-
   const sections = report?.sections || [];
-  sections.forEach(section => {
-    (section.sectionDetails || []).forEach(detail => {
-      const values = detail?.values || {};
 
-      if (values.risk) {
-        riskSet.add(values.risk);
-      }
+  const risksSet = new Set();
+  const rulesArr = [];
 
-      (values.policyRuleGroupResults || []).forEach(group => {
-        (group.policyRuleResultJoins || []).forEach(join => {
-          (join.policyRuleResults || []).forEach(rule => {
+  sections.forEach((section) => {
+    (section.sectionDetails || []).forEach((detail) => {
+      const values = detail.values || {};
+      if (values.risk) risksSet.add(values.risk);
+
+      (values.policyRuleGroupResults || []).forEach((group) => {
+        (group.policyRuleResultJoins || []).forEach((join) => {
+          (join.policyRuleResults || []).forEach((rule) => {
             const key = rule?.status?.key;
-            if (key === 'ALERT' || key === 'DENIED') {
-              const rawDesc = rule?.descriptions || '';
-              const cleanDescription = rawDesc.replace(/\{\{.*?\}\}/g, '').trim();
-              rules.push({
-                description: cleanDescription,
-                status: rule?.status?.value || ''});
+            if (key === 'DENIED' || key === 'ALERT') {
+              rulesArr.push({
+                description: cleanDescription(rule.descriptions),
+                status: rule.status?.value || '',
+              });
             }
           });
         });
       });
-      if (!businessName) {
-        const candidate =
-          values.name;
-        if (candidate) businessName = String(candidate).trim();
-      }
     });
   });
 
-  return {
-    statusValue,
-    risks: Array.from(riskSet),
-    rules,
-    businessName
-  };
+  const risks = Array.from(risksSet);
+  const businessName = extractCompanyName(report);
+
+  return { statusValue, risks, rules: rulesArr, businessName };
 }
-// 🔐 Token
+
+// -------------------------
+// Rotas
+// -------------------------
+
+// Token Gyra+
 app.post('/api/token', async (req, res) => {
   try {
     const response = await axios.post(
@@ -64,8 +111,8 @@ app.post('/api/token', async (req, res) => {
         headers: {
           'gyra-client-id': process.env.GYRA_CLIENT_ID,
           'gyra-client-secret': process.env.GYRA_CLIENT_SECRET,
-          'Content-Type': 'application/json'
-        }
+          'Content-Type': 'application/json',
+        },
       }
     );
     res.json({ token: response.data.accessToken });
@@ -75,113 +122,105 @@ app.post('/api/token', async (req, res) => {
   }
 });
 
-// 🧾 Gera/recicla report (salva só o id)
+// Criação/reativação de Report (normaliza CNPJ e reusa ≤90 dias)
 app.post('/api/report', async (req, res) => {
-  const { token, cnpj, policyId, sector } = req.body;
-
   try {
-    // verifica reaproveitamento nos últimos 90 dias
-    const [rows] = await pool.execute(
-      `SELECT report_id, created_at 
-        FROM cnpj_reports 
-        WHERE cnpj = ? 
-        AND created_at > NOW() - INTERVAL 90 DAY
+    const { token, cnpj, policyId, sector } = req.body;
+
+    const normalized = normalizeCNPJNumeric(cnpj);
+    if (!isValidCNPJ(normalized)) {
+      return res.status(400).json({ error: 'CNPJ inválido' });
+    }
+    const formatted = formatCNPJMask(normalized);
+
+    // 1) Verifica se já existe report em ≤ 90 dias para este CNPJ normalizado
+    const [exists] = await pool.execute(
+      `SELECT id, report_id, formatted_cnpj, created_at
+         FROM cnpj_reports
+        WHERE normalized_cnpj = ?
+          AND created_at > NOW() - INTERVAL 90 DAY
         ORDER BY created_at DESC
         LIMIT 1`,
-      [cnpj]
+      [normalized]
     );
 
-    if (rows.length > 0) {
-      return res.json({ reused: true, reportId: rows[0].report_id });
+    if (exists.length) {
+      // Reaproveita (sem custo novo)
+      return res.json({
+        id: exists[0].report_id,
+        reused: true,
+        cnpj: normalized,
+        formatted: exists[0].formatted_cnpj || formatted,
+      });
     }
 
-    // gera novo relatório na Gyra+
-    const response = await axios.post(
+    // 2) Cria novo report no Gyra+
+    const created = await axios.post(
       'https://gyra-core.gyramais.com.br/report',
-      { document: cnpj, policyId },
+      { document: normalized, policyId },
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    const reportId = created.data?.id || created.data?.reportId;
 
-    const reportId = response.data.id;
-
-    // insere/atualiza (garanta UNIQUE(cnpj) na tabela)
+    // 3) Insere na base (sector só no insert)
     await pool.execute(
-      `INSERT INTO cnpj_reports (cnpj, report_id, sector, created_at)
-       VALUES (?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE report_id = VALUES(report_id), created_at = NOW()`,
-      [cnpj, reportId, sector ?? null]
+      `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
+       VALUES (?, ?, ?, ?, ?, NOW())`,
+      [cnpj, normalized, formatted, reportId, sector || null]
     );
 
-    res.json({ reused: false, reportId });
+    res.json({ id: reportId, reused: false, cnpj: normalized, formatted });
   } catch (err) {
     console.error('❌ /api/report:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🔎 Busca um report na Gyra+ pelo id salvo
+// Report completo + atualização única (ou se estava PENDING)
 app.get('/api/report/:id', async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     const reportId = req.params.id;
 
-    // 1) Checar se já está preenchido (evita UPDATE desnecessário)
-    const [rows] = await pool.execute(
-      'SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1',
-      [reportId]
-    );
-    const currentStatus = rows.length ? (rows[0].status_value || '').trim() : '';
-    const currentName   = rows.length ? (rows[0].business_name || '').trim() : '';
-    
-    const isEmpty = currentStatus === '';
-    const isPending = currentStatus.toUpperCase() === 'PENDING';
-    const updateNeeded = isEmpty || isPending;
-
-    // 2) Sempre busca relatório completo na Gyra+ (precisamos retornar ao front)
-    const response = await axios.get(
+    const resp = await axios.get(
       `https://gyra-core.gyramais.com.br/report/${reportId}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    const fullReport = response.data;
 
-    const { statusValue, risks, rules, businessName } = extractReportSummary(fullReport);
+    const fullReport = resp.data;
 
-    // Atualiza resumo UMA vez (quando vazio/pendente)
-    if (updateNeeded) {
-      const rulesToStore = (rules || []).map(r => r.description);
+    // Atualiza 1x (ou se estava PENDING)
+    const [rows] = await pool.execute(
+      `SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1`,
+      [reportId]
+    );
+
+    const current = rows?.[0]?.status_value;
+    const needsUpdate =
+      current == null ||
+      String(current).trim() === '' ||
+      String(current).toUpperCase() === 'PENDING';
+
+    if (needsUpdate) {
+      const { statusValue, risks, rules, businessName } = extractReportSummary(fullReport);
+
       await pool.execute(
         `UPDATE cnpj_reports
             SET status_value = ?,
                 risks = ?,
-                rules = ?
-          WHERE report_id = ?
-            AND (
-                  status_value IS NULL
-               OR status_value = ''
-               OR UPPER(status_value) = 'PENDING'
-               OR UPPER(status_value) = 'PENDENTE'
-            )`,
+                rules = ?,
+                business_name = ?
+          WHERE report_id = ?`,
         [
           statusValue || null,
           JSON.stringify(risks || []),
-          JSON.stringify(rulesToStore),
-          reportId
+          JSON.stringify(rules || []),
+          businessName || null,
+          reportId,
         ]
       );
     }
 
-    // Garante salvar o NOME se ainda não estiver salvo (independente do status)
-    if (!currentName && businessName) {
-      await pool.execute(
-        `UPDATE cnpj_reports
-            SET business_name = ?
-          WHERE report_id = ?
-            AND (business_name IS NULL OR business_name = '')`,
-        [businessName, reportId]
-      );
-    }
-
-    // 4) Retorna o relatório completo
     res.json(fullReport);
   } catch (err) {
     console.error('❌ /api/report/:id:', err.response?.data || err.message);
@@ -189,12 +228,14 @@ app.get('/api/report/:id', async (req, res) => {
   }
 });
 
-
-// 📃 Lista ids salvos
+// Lista (90 dias)
 app.get('/api/reports', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT id, cnpj, business_name, report_id, sector, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC'
+      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, created_at
+         FROM cnpj_reports
+        WHERE created_at > NOW() - INTERVAL 90 DAY
+        ORDER BY created_at DESC`
     );
     res.json(rows);
   } catch (err) {
@@ -203,47 +244,44 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-import * as XLSX from 'xlsx'
+// Export XLSX (90 dias)
 app.get('/api/reports.xlsx', async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT id, cnpj, business_name, report_id, sector, status_value, risks, rules, created_at FROM cnpj_reports WHERE created_at > NOW() - INTERVAL 90 DAY ORDER BY created_at DESC')
+    const [rows] = await pool.execute(
+      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, created_at
+         FROM cnpj_reports
+        WHERE created_at > NOW() - INTERVAL 90 DAY
+        ORDER BY created_at DESC`
+    );
 
-    const data = rows.map(r => ({
-      CNPJ: r.cnpj,
-      Nome: r.business_name,
-      ReportID: r.report_id,
-      Setor: r.sector || '',
-      Status: r.status_value,
-      Riscos: r.risks,
-      Regras: r.rules,
-      CriadoEm: new Date(r.created_at).toISOString()
-    }))
+    const data = rows.map((r) => ({
+      ID: r.id,
+      CNPJ_ORIGINAL: r.cnpj,
+      CNPJ_NORMALIZADO: r.normalized_cnpj,
+      CNPJ_FORMATADO: r.formatted_cnpj, // ✅ incluído
+      REPORT_ID: r.report_id,
+      SETOR: r.sector,
+      NOME_EMPRESA: r.business_name,
+      STATUS_GERAL: r.status_value,
+      CRIADO_EM: r.created_at,
+    }));
 
-    const ws = XLSX.utils.json_to_sheet(data)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Relatorios')
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(data);
+    XLSX.utils.book_append_sheet(wb, ws, 'reports_90d');
 
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', 'attachment; filename="relatorios.xlsx"')
-    res.send(buf)
-  } catch (e) {
-    console.error(e)
-    res.status(500).send('Erro ao exportar XLSX')
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition','attachment; filename="reports_90d.xlsx"');
+    res.send(buf);
+  } catch (err) {
+    console.error('❌ /api/reports.xlsx:', err.message);
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-// 💡 encerra pool
-const shutdown = async () => {
-  try {
-    await pool.end();
-  } finally {
-    process.exit(0);
-  }
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
-app.listen(3001, () => {
-  console.log('✅ Backend API ready at http://localhost:3001');
+// -------------------------
+const PORT = Number(process.env.PORT || 3001);
+app.listen(PORT, () => {
+  console.log(`✅ Backend API ready at http://localhost:${PORT}`);
 });
