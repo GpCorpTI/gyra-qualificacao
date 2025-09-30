@@ -5,6 +5,7 @@ const BASE =  'http://192.168.87.79:3001';
 
 export async function getToken() {
   const { data } = await axios.post(`${BASE}/api/token`);
+  // console.log("token created")
   return data.token;
 }
 

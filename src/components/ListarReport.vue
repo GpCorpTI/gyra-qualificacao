@@ -130,7 +130,7 @@ export default {
     async init() {
       try {
         this.loadingList = true;
-        this.token = await getToken();
+        // this.token = await getToken();
         this.reports = await listReports();
       } catch (err) {
         console.error('❌ init/listReports:', err);
