@@ -16,7 +16,6 @@ export function cleanDescription(text) {
   return (text || '').replace(/\{\{.*?\}\}/g, '').trim();
 }
 
-
 export function extractCompanyName(report) {
   const sections = report?.sections || [];
   for (const sec of sections) {
@@ -29,7 +28,21 @@ export function extractCompanyName(report) {
 }
 
 export function extractReportData(report) {
-  const mainStatus = report?.status?.value || 'Sem status';
+  const statusKey   = report?.status?.key?.toUpperCase() || '';
+  const statusValue = report?.status?.value || 'Sem status';
+  const companyName = extractCompanyName(report);
+
+  // ✅ Frontend-only override: if pending, show a single risk "Pendente" and hide rules
+  if (statusKey === 'PENDING' || statusValue.toLowerCase().includes('pend')) {
+    return {
+      companyName,
+      mainStatus: statusValue || 'Pendente',
+      riskInfo: ['Pendente'],
+      policySummaries: [],
+    };
+  }
+
+  // Normal extraction when not pending
   const sections = report?.sections || [];
   const risks = new Set();
   const policySummaries = [];
@@ -55,6 +68,10 @@ export function extractReportData(report) {
     });
   });
 
-  const companyName = extractCompanyName(report);
-  return { companyName, mainStatus, riskInfo: Array.from(risks), policySummaries };
+  return {
+    companyName,
+    mainStatus: statusValue,
+    riskInfo: Array.from(risks),
+    policySummaries,
+  };
 }
