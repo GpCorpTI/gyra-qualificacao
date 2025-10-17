@@ -145,7 +145,7 @@ app.post('/api/report', async (req, res) => {
     );
 
     if (exists.length) {
-      // Reaproveita (sem custo novo)
+      // (sem custo novo)
       return res.json({
         id: exists[0].report_id,
         reused: true,
@@ -283,7 +283,32 @@ app.get('/api/reports.xlsx', async (req, res) => {
 });
 
 // -------------------------
-const PORT = Number(process.env.PORT || 3001);
+const PORT = Number(process.env.PORT);
+
+// --- Static frontend mounted at /motorcredito ---
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const distPath = path.resolve(__dirname, '../dist');
+console.log('Serving frontend from:', distPath);
+
+if (!fs.existsSync(path.join(distPath, 'index.html'))) {
+  console.error('⚠️ dist/index.html not found. Run "npm run build" at project root.');
+}
+
+// Serve static files under /motorcredito
+app.use('/motorcredito', express.static(distPath, { maxAge: '7d', etag: true }));
+
+// SPA fallback for any /motorcredito/* route
+app.get('/motorcredito/*', (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
+});
+
+
 app.listen(PORT, () => {
   console.log(`✅ Backend API ready at http://localhost:${PORT}`);
 });
