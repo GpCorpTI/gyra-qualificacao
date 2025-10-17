@@ -248,7 +248,7 @@ app.get('/api/reports', async (req, res) => {
 app.get('/api/reports.xlsx', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, created_at
+      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, rules, risks, created_at
          FROM cnpj_reports
         WHERE created_at > NOW() - INTERVAL 90 DAY
         ORDER BY created_at DESC`
@@ -263,6 +263,8 @@ app.get('/api/reports.xlsx', async (req, res) => {
       SETOR: r.sector,
       NOME_EMPRESA: r.business_name,
       STATUS_GERAL: r.status_value,
+      REGRAS: r.rules,
+      RISCOS: r.risks,
       CRIADO_EM: r.created_at,
     }));
 
