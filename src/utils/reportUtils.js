@@ -27,6 +27,30 @@ export function extractCompanyName(report) {
   return '';
 }
 
+export function formatDateTime(dt) {
+  if (!dt) return '-';
+
+  // Handle ISO, Date, or MySQL "YYYY-MM-DD HH:MM:SS"
+  let value = dt;
+  if (typeof dt === 'string' && dt.includes(' ') && !dt.includes('T')) {
+    value = dt.replace(' ', 'T');
+  }
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(dt);
+
+  return d.toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
 export function extractReportData(report) {
   const statusKey   = report?.status?.key?.toUpperCase() || '';
   const statusValue = report?.status?.value || 'Sem status';

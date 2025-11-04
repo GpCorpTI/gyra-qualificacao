@@ -97,6 +97,15 @@ function extractReportSummary(report) {
   return { statusValue, risks, rules: rulesArr, businessName };
 }
 
+async function execRows(sql, params = []) {
+  const res = await pool.execute(sql, params);
+  // mysql2/promise -> [rows, fields]
+  if (Array.isArray(res)) return res[0];
+  // pg-like -> { rows: [...] }
+  if (res && Array.isArray(res.rows)) return res.rows;
+  // already rows array
+  return res;
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -134,15 +143,15 @@ app.post('/api/report', async (req, res) => {
     const formatted = formatCNPJMask(normalized);
 
     // 1) Verifica se já existe report em ≤ 90 dias para este CNPJ normalizado
-    const [exists] = await pool.execute(
-      `SELECT id, report_id, formatted_cnpj, created_at
-         FROM cnpj_reports
-        WHERE normalized_cnpj = ?
-          AND created_at > NOW() - INTERVAL 90 DAY
-        ORDER BY created_at DESC
-        LIMIT 1`,
-      [normalized]
-    );
+  const exists = await execRows(
+    `SELECT id, report_id, formatted_cnpj, created_at
+      FROM cnpj_reports
+      WHERE normalized_cnpj = ?
+        AND created_at > NOW() - INTERVAL 90 DAY
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [normalized]
+  );
 
     if (exists.length) {
       // (sem custo novo)
@@ -180,21 +189,29 @@ app.post('/api/report', async (req, res) => {
 app.get('/api/report/:id', async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Missing Authorization Bearer token' });
+
     const reportId = req.params.id;
 
+    // 1) DB: created_at
+    const createdRows = await execRows(
+      'SELECT created_at FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+      [reportId]
+    );
+    const createdAt = createdRows?.[0]?.created_at || null;
+
+    // 2) Gyra: full report
     const resp = await axios.get(
       `https://gyra-core.gyramais.com.br/report/${reportId}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-
     const fullReport = resp.data;
 
-    // Atualiza 1x (ou se estava PENDING)
-    const [rows] = await pool.execute(
-      `SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1`,
+    // 3) Update DB summary once (or if it was PENDING)
+    const rows = await execRows(
+      'SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1',
       [reportId]
     );
-
     const current = rows?.[0]?.status_value;
     const needsUpdate =
       current == null ||
@@ -221,21 +238,34 @@ app.get('/api/report/:id', async (req, res) => {
       );
     }
 
-    res.json(fullReport);
+    // 4) Return Gyra data + our DB timestamp
+    res.json({...fullReport, createdAt });
+
   } catch (err) {
-    console.error('❌ /api/report/:id:', err.response?.data || err.message);
-    res.status(500).json({ error: err.message });
+    console.error('❌ /api/report/:id:', err.response?.data || err.message || err);
+    res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
 
 // Lista (90 dias)
 app.get('/api/reports', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, created_at
-         FROM cnpj_reports
-        WHERE created_at > NOW() - INTERVAL 90 DAY
-        ORDER BY created_at DESC`
+    const rows = await execRows(
+      `SELECT
+         id,
+         cnpj,
+         normalized_cnpj,
+         formatted_cnpj,
+         report_id,
+         sector,
+         business_name,
+         status_value,
+         risks,
+         rules,
+         created_at
+       FROM cnpj_reports
+       WHERE created_at > NOW() - INTERVAL 90 DAY
+       ORDER BY created_at DESC`
     );
     res.json(rows);
   } catch (err) {

@@ -38,13 +38,16 @@
           <li v-for="(risk, index) in riskInfo" :key="index"> {{ risk }}</li>
         </ul>
       </div>
+            <div style="margin-top:0;">
+        <strong>Consulta criada em:</strong> {{ formatDateTime(dbCreatedAt) }}
+      </div>
     </div>
   </div>
 </template>
 
 <script>
 import { getToken, createReport, getReportById } from '@/services/gyraApi';
-import { extractReportData, translateStatus, cleanDescription } from '@/utils/reportUtils';
+import { extractReportData, translateStatus, cleanDescription,formatDateTime } from '@/utils/reportUtils';
 
 export default {
   name: 'ComercialPage',
@@ -58,11 +61,13 @@ export default {
       mainStatus: '',
       riskInfo: [],
       policySummaries: [],
+      dbCreatedAt: null,
     };
   },
   methods: {
     translateStatus,
     cleanDescription,
+    formatDateTime,
 
     async handleCNPJSearch() {
       this.loading = true;
@@ -83,6 +88,7 @@ export default {
 
         const fullReport = await getReportById({ token, reportId });
         this.report = fullReport;
+        this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
         const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
         this.companyName = companyName;
