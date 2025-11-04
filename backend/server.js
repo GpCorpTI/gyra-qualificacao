@@ -5,12 +5,74 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import XLSX from 'xlsx';
 import { pool } from './db.js'; // ✅ use your existing pool
+import pinoHttp from 'pino-http';
+import logger from './logger.js';
+
+const PORT = Number(process.env.PORT);
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+
+// -------------------------
+// LOG config
+// -------------------------
+
+app.use(
+  pinoHttp({
+    logger,
+    // Only log very specific bits from req/res
+    serializers: {
+      req(req) {
+        return {
+          id: req.id,
+          method: req.method,
+          url: req.url,
+          ip: req.ip || req.socket?.remoteAddress,
+        };
+      },
+      res(res) {
+        return {
+          statusCode: res.statusCode,
+        };
+      },
+    },
+    // Keep INFO unless error/4xx/5xx
+    customLogLevel(res, err) {
+      if (err || res.statusCode >= 500) return 'error';
+      if (res.statusCode >= 400) return 'warn';
+      return 'info';
+    },
+    // Show a tiny message line
+    customSuccessMessage(req, res) {
+      return `ok ${req.method} ${req.url} ${res.statusCode}`;
+    },
+    customErrorMessage(req, res, err) {
+      return `err ${req.method} ${req.url} ${res.statusCode || 500}`;
+    },
+    // Attach *just* useful props per request
+    customProps(req, res) {
+      // note: cnpj only exists on POST /api/report; reportId on GET /api/report/:id
+      const cnpj = req.body?.cnpj || req.query?.cnpj;
+      const reportId = req.params?.id;
+      return {
+        cnpj,
+        reportId,
+      };
+    },
+    autoLogging: {
+      ignore: (req) => req.url === '/health',
+    },
+  })
+);
+
+// function cryptoRandomId() {
+//   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+// }
+
 
 // -------------------------
 // Helpers de CNPJ
@@ -124,8 +186,11 @@ app.post('/api/token', async (req, res) => {
         },
       }
     );
+    const userId = response.data?.userId;
+    req.log.info({ userId }, '✅ Gyra+ token issued');
     res.json({ token: response.data.accessToken });
   } catch (err) {
+    req.log.error({ err, gyraMsg: err.response?.data }, '❌ /api/token failed');
     console.error('❌ /api/token:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
@@ -135,6 +200,7 @@ app.post('/api/token', async (req, res) => {
 app.post('/api/report', async (req, res) => {
   try {
     const { token, cnpj, policyId, sector } = req.body;
+    const start = Date.now();
 
     const normalized = normalizeCNPJNumeric(cnpj);
     if (!isValidCNPJ(normalized)) {
@@ -177,9 +243,12 @@ app.post('/api/report', async (req, res) => {
        VALUES (?, ?, ?, ?, ?, NOW())`,
       [cnpj, normalized, formatted, reportId, sector || null]
     );
-
+    const dur = Date.now() - start;
+    req.log.info({ cnpj, sector, reportId, reused, ms: dur }, 'report.create');
     res.json({ id: reportId, reused: false, cnpj: normalized, formatted });
   } catch (err) {
+    const dur = Date.now() - start;
+    req.log.error({ err, cnpj, sector, ms: dur }, 'report.create.fail');
     console.error('❌ /api/report:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
@@ -187,6 +256,8 @@ app.post('/api/report', async (req, res) => {
 
 // Report completo + atualização única (ou se estava PENDING)
 app.get('/api/report/:id', async (req, res) => {
+  const reportId = req.params.id;
+  const start = Date.now();
   try {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Missing Authorization Bearer token' });
@@ -239,9 +310,13 @@ app.get('/api/report/:id', async (req, res) => {
     }
 
     // 4) Return Gyra data + our DB timestamp
+    const dur = Date.now() - start;
+    req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     res.json({...fullReport, createdAt });
 
   } catch (err) {
+    const dur = Date.now() - start;
+    req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     console.error('❌ /api/report/:id:', err.response?.data || err.message || err);
     res.status(500).json({ error: err.message || 'Internal error' });
   }
@@ -309,9 +384,6 @@ app.get('/api/reports.xlsx', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// -------------------------
-const PORT = Number(process.env.PORT);
 
 // --- Static frontend mounted at /motorcredito ---
 import path from 'path';
