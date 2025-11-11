@@ -71,6 +71,10 @@
             </li>
           </ul>
         </div>
+
+        <div style="margin-top:0;">
+          <strong>Consulta criada em:</strong> {{ formatDateTime(dbCreatedAt) }}
+        </div>
       </template>
 
       <div v-if="cooldownRemaining > 0" class="cooldown">
@@ -82,7 +86,7 @@
 
 <script>
 import { getToken, listReports, getReportById } from '@/services/gyraApi';
-import { extractReportData, translateStatus, cleanDescription } from '@/utils/reportUtils';
+import { extractReportData, translateStatus, cleanDescription, formatDateTime } from '@/utils/reportUtils';
 
 const BASE = process.env.VUE_APP_BACKEND_URL || 'http://192.168.87.79:3001';
 
@@ -93,21 +97,18 @@ export default {
       reports: [],
       selectedReportId: null,
       selectedRow: null,
-
       loadingList: false,
       loadingReport: false,
       error: '',
-
       // detail panel
       report: null,
       companyName: '',
       mainStatus: '',
       riskInfo: [],
       policySummaries: [],
-
+      dbCreatedAt: null,
       // cooldown
       cooldownRemaining: 0,
-
       // token cache
       token: null,
     };
@@ -126,6 +127,7 @@ export default {
   methods: {
     translateStatus,
     cleanDescription,
+    formatDateTime,
 
     async init() {
       try {
@@ -175,6 +177,7 @@ export default {
 
         const fullReport = await getReportById({ token: this.token, reportId });
         this.report = fullReport;
+        this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
         const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
         this.companyName = companyName;
@@ -189,14 +192,7 @@ export default {
       }
     },
 
-    formatDateTime(isoOrSql) {
-      try {
-        const d = new Date(isoOrSql);
-        return d.toLocaleString('pt-BR');
-      } catch {
-        return isoOrSql;
-      }
-    },
+
   },
 };
 </script>

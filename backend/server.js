@@ -5,12 +5,74 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import XLSX from 'xlsx';
 import { pool } from './db.js'; // ✅ use your existing pool
+import pinoHttp from 'pino-http';
+import logger from './logger.js';
+
+const PORT = Number(process.env.PORT);
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+
+// -------------------------
+// LOG config
+// -------------------------
+
+app.use(
+  pinoHttp({
+    logger,
+    // Only log very specific bits from req/res
+    serializers: {
+      req(req) {
+        return {
+          id: req.id,
+          method: req.method,
+          url: req.url,
+          ip: req.ip || req.socket?.remoteAddress,
+        };
+      },
+      res(res) {
+        return {
+          statusCode: res.statusCode,
+        };
+      },
+    },
+    // Keep INFO unless error/4xx/5xx
+    customLogLevel(res, err) {
+      if (err || res.statusCode >= 500) return 'error';
+      if (res.statusCode >= 400) return 'warn';
+      return 'info';
+    },
+    // Show a tiny message line
+    customSuccessMessage(req, res) {
+      return `ok ${req.method} ${req.url} ${res.statusCode}`;
+    },
+    customErrorMessage(req, res, err) {
+      return `err ${req.method} ${req.url} ${res.statusCode || 500}`;
+    },
+    // Attach *just* useful props per request
+    customProps(req, res) {
+      // note: cnpj only exists on POST /api/report; reportId on GET /api/report/:id
+      const cnpj = req.body?.cnpj || req.query?.cnpj;
+      const reportId = req.params?.id;
+      return {
+        cnpj,
+        reportId,
+      };
+    },
+    autoLogging: {
+      ignore: (req) => req.url === '/health',
+    },
+  })
+);
+
+// function cryptoRandomId() {
+//   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+// }
+
 
 // -------------------------
 // Helpers de CNPJ
@@ -97,6 +159,15 @@ function extractReportSummary(report) {
   return { statusValue, risks, rules: rulesArr, businessName };
 }
 
+async function execRows(sql, params = []) {
+  const res = await pool.execute(sql, params);
+  // mysql2/promise -> [rows, fields]
+  if (Array.isArray(res)) return res[0];
+  // pg-like -> { rows: [...] }
+  if (res && Array.isArray(res.rows)) return res.rows;
+  // already rows array
+  return res;
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -115,8 +186,11 @@ app.post('/api/token', async (req, res) => {
         },
       }
     );
+    const userId = response.data?.userId;
+    req.log.info({ userId }, '✅ Gyra+ token issued');
     res.json({ token: response.data.accessToken });
   } catch (err) {
+    req.log.error({ err, gyraMsg: err.response?.data }, '❌ /api/token failed');
     console.error('❌ /api/token:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
@@ -126,6 +200,7 @@ app.post('/api/token', async (req, res) => {
 app.post('/api/report', async (req, res) => {
   try {
     const { token, cnpj, policyId, sector } = req.body;
+    const start = Date.now();
 
     const normalized = normalizeCNPJNumeric(cnpj);
     if (!isValidCNPJ(normalized)) {
@@ -134,15 +209,15 @@ app.post('/api/report', async (req, res) => {
     const formatted = formatCNPJMask(normalized);
 
     // 1) Verifica se já existe report em ≤ 90 dias para este CNPJ normalizado
-    const [exists] = await pool.execute(
-      `SELECT id, report_id, formatted_cnpj, created_at
-         FROM cnpj_reports
-        WHERE normalized_cnpj = ?
-          AND created_at > NOW() - INTERVAL 90 DAY
-        ORDER BY created_at DESC
-        LIMIT 1`,
-      [normalized]
-    );
+  const exists = await execRows(
+    `SELECT id, report_id, formatted_cnpj, created_at
+      FROM cnpj_reports
+      WHERE normalized_cnpj = ?
+        AND created_at > NOW() - INTERVAL 90 DAY
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [normalized]
+  );
 
     if (exists.length) {
       // (sem custo novo)
@@ -168,9 +243,12 @@ app.post('/api/report', async (req, res) => {
        VALUES (?, ?, ?, ?, ?, NOW())`,
       [cnpj, normalized, formatted, reportId, sector || null]
     );
-
+    const dur = Date.now() - start;
+    req.log.info({ cnpj, sector, reportId, reused, ms: dur }, 'report.create');
     res.json({ id: reportId, reused: false, cnpj: normalized, formatted });
   } catch (err) {
+    const dur = Date.now() - start;
+    req.log.error({ err, cnpj, sector, ms: dur }, 'report.create.fail');
     console.error('❌ /api/report:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
@@ -178,23 +256,33 @@ app.post('/api/report', async (req, res) => {
 
 // Report completo + atualização única (ou se estava PENDING)
 app.get('/api/report/:id', async (req, res) => {
+  const reportId = req.params.id;
+  const start = Date.now();
   try {
     const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Missing Authorization Bearer token' });
+
     const reportId = req.params.id;
 
+    // 1) DB: created_at
+    const createdRows = await execRows(
+      'SELECT created_at FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+      [reportId]
+    );
+    const createdAt = createdRows?.[0]?.created_at || null;
+
+    // 2) Gyra: full report
     const resp = await axios.get(
       `https://gyra-core.gyramais.com.br/report/${reportId}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-
     const fullReport = resp.data;
 
-    // Atualiza 1x (ou se estava PENDING)
-    const [rows] = await pool.execute(
-      `SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1`,
+    // 3) Update DB summary once (or if it was PENDING)
+    const rows = await execRows(
+      'SELECT status_value FROM cnpj_reports WHERE report_id = ? LIMIT 1',
       [reportId]
     );
-
     const current = rows?.[0]?.status_value;
     const needsUpdate =
       current == null ||
@@ -221,21 +309,38 @@ app.get('/api/report/:id', async (req, res) => {
       );
     }
 
-    res.json(fullReport);
+    // 4) Return Gyra data + our DB timestamp
+    const dur = Date.now() - start;
+    req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
+    res.json({...fullReport, createdAt });
+
   } catch (err) {
-    console.error('❌ /api/report/:id:', err.response?.data || err.message);
-    res.status(500).json({ error: err.message });
+    const dur = Date.now() - start;
+    req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
+    console.error('❌ /api/report/:id:', err.response?.data || err.message || err);
+    res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
 
 // Lista (90 dias)
 app.get('/api/reports', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, created_at
-         FROM cnpj_reports
-        WHERE created_at > NOW() - INTERVAL 90 DAY
-        ORDER BY created_at DESC`
+    const rows = await execRows(
+      `SELECT
+         id,
+         cnpj,
+         normalized_cnpj,
+         formatted_cnpj,
+         report_id,
+         sector,
+         business_name,
+         status_value,
+         risks,
+         rules,
+         created_at
+       FROM cnpj_reports
+       WHERE created_at > NOW() - INTERVAL 90 DAY
+       ORDER BY created_at DESC`
     );
     res.json(rows);
   } catch (err) {
@@ -281,9 +386,6 @@ app.get('/api/reports.xlsx', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// -------------------------
-const PORT = Number(process.env.PORT);
 
 // --- Static frontend mounted at /motorcredito ---
 import path from 'path';
