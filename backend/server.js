@@ -7,15 +7,17 @@ import XLSX from 'xlsx';
 import { pool } from './db.js'; // ✅ use your existing pool
 import pinoHttp from 'pino-http';
 import logger from './logger.js';
+import https from 'https';
+import hanaClient from '@sap/hana-client';
 
-const PORT = Number(process.env.PORT);
+
 
 dotenv.config();
-
+const PORT = Number(process.env.PORT);
 const app = express();
 app.use(express.json());
 app.use(cors());
-
+const { HANA_SERVER, HANA_PORT, HANA_UID, HANA_PWD, HANA_SCHEMA } = process.env;
 
 // -------------------------
 // LOG config
@@ -136,7 +138,7 @@ function extractReportSummary(report) {
     (section.sectionDetails || []).forEach((detail) => {
       const values = detail.values || {};
       if (values.risk) risksSet.add(values.risk);
-
+      
       (values.policyRuleGroupResults || []).forEach((group) => {
         (group.policyRuleResultJoins || []).forEach((join) => {
           (join.policyRuleResults || []).forEach((rule) => {
@@ -168,6 +170,122 @@ async function execRows(sql, params = []) {
   // already rows array
   return res;
 }
+
+// ─────────────────────────────────────────────────────────────
+// 1) SAP Service Layer session (one login per update)
+// ─────────────────────────────────────────────────────────────
+const sapHttpsAgent = new https.Agent({ rejectUnauthorized: false }); // self-signed ok
+
+async function sapCreateSession() {
+  const payload = {
+    CompanyDB: process.env.COMPANYDB_SAP,
+    UserName: process.env.SAP_USER,
+    Password: process.env.SAP_PASSWORD,
+  };
+
+  const resp = await axios.post(
+    `${process.env.BASE_SAP}/Login`,
+    payload,
+    { httpsAgent: sapHttpsAgent, maxRedirects: 0, validateStatus: () => true }
+  );
+
+  if (resp.status !== 200) {
+    throw new Error(`SAP login failed (${resp.status}): ${JSON.stringify(resp.data)}`);
+  }
+
+  const setCookie = resp.headers['set-cookie'] || [];
+  const cookieHeader = setCookie.map(c => c.split(';')[0]).join('; '); // "B1SESSION=...; ROUTEID=..."
+
+  return axios.create({
+    baseURL: process.env.BASE_SAP,
+    httpsAgent: sapHttpsAgent,
+    headers: { Cookie: cookieHeader, 'Content-Type': 'application/json' },
+    validateStatus: () => true,
+  });
+}
+
+async function sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate) {
+  const resp = await sap.patch(
+    `/BusinessPartners('${cardCode}')`,
+    { U_dtUltimaAnaliseCredito: isoDate },
+    { headers: { 'If-Match': '*' } }
+  );
+  if (resp.status < 200 || resp.status >= 300) {
+    throw new Error(`SAP PATCH failed (${resp.status}): ${JSON.stringify(resp.data)}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 2) HANA query helpers (to resolve CardCode via CRD7.TaxId0)
+// ─────────────────────────────────────────────────────────────
+
+function hanaConnParams() {
+  const p = {
+    serverNode: `${HANA_SERVER}:${HANA_PORT}`,
+    uid: HANA_UID,
+    pwd: HANA_PWD,
+    // sslValidateCertificate: 'false', // uncomment if you must skip TLS validation
+  };
+  if (HANA_SCHEMA) p.CURRENTSCHEMA = HANA_SCHEMA;
+  return p;
+}
+
+
+async function hanaQueryOne(sql, params = []) {
+  const conn = hanaClient.createConnection();
+  await new Promise((resolve, reject) =>
+    conn.connect(hanaConnParams(), err => (err ? reject(err) : resolve()))
+  );
+
+  try {
+    const stmt = conn.prepare(sql);
+    const rows = await new Promise((resolve, reject) => {
+      stmt.exec(params, (err, rs) => (err ? reject(err) : resolve(rs)));
+    });
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } finally {
+    try { conn.disconnect(); } catch (_) {}
+  }
+}
+
+/** Get CardCode by CNPJ from CRD7.TaxId0 (DB stores formatted; we compare digits-only) */
+async function getCardCodeByCNPJ_HANA(cnpjInput) {
+  // 1) normalize and validate
+  const digits = normalizeCNPJNumeric(cnpjInput || '');
+  if (digits.length !== 14) return null;
+
+  // 2) format back to the standard mask (DB stores formatted in CRD7.TaxId0)
+  const formatted = formatCNPJMask(digits);
+  if (!formatted) return null;
+
+  // 3) try exact formatted match first (fast path, uses index if any)
+  {
+    const sqlExact = `
+      SELECT T0."CardCode"
+      FROM CRD7 T0
+      JOIN OCRD T1 ON T1."CardCode" = T0."CardCode"
+      WHERE T0."TaxId0" = ?
+      LIMIT 1
+    `;
+    const row = await hanaQueryOne(sqlExact, [formatted]);
+    if (row && row.CardCode) return row.CardCode;
+  }
+
+  // 4) fallback: digits-only comparison (handles any odd formatting)
+  {
+    const sqlDigits = `
+      SELECT T0."CardCode"
+      FROM CRD7 T0
+      JOIN OCRD T1 ON T1."CardCode" = T0."CardCode"
+      WHERE REPLACE(REPLACE(REPLACE(T0."TaxId0", '.', ''), '/', ''), '-', '') = ?
+      LIMIT 1
+    `;
+    const row = await hanaQueryOne(sqlDigits, [digits]);
+    if (row && row.CardCode) return row.CardCode;
+  }
+
+  return null;
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -198,16 +316,16 @@ app.post('/api/token', async (req, res) => {
 
 // Criação/reativação de Report (normaliza CNPJ e reusa ≤90 dias)
 app.post('/api/report', async (req, res) => {
+  const start = Date.now();
+  let reused = false;
   try {
     const { token, cnpj, policyId, sector } = req.body;
-    const start = Date.now();
 
     const normalized = normalizeCNPJNumeric(cnpj);
     if (!isValidCNPJ(normalized)) {
       return res.status(400).json({ error: 'CNPJ inválido' });
     }
     const formatted = formatCNPJMask(normalized);
-
     // 1) Verifica se já existe report em ≤ 90 dias para este CNPJ normalizado
   const exists = await execRows(
     `SELECT id, report_id, formatted_cnpj, created_at
@@ -220,10 +338,11 @@ app.post('/api/report', async (req, res) => {
   );
 
     if (exists.length) {
+      reused = true;
       // (sem custo novo)
       return res.json({
         id: exists[0].report_id,
-        reused: true,
+        reused,
         cnpj: normalized,
         formatted: exists[0].formatted_cnpj || formatted,
       });
@@ -246,9 +365,10 @@ app.post('/api/report', async (req, res) => {
     const dur = Date.now() - start;
     req.log.info({ cnpj, sector, reportId, reused, ms: dur }, 'report.create');
     res.json({ id: reportId, reused: false, cnpj: normalized, formatted });
+
   } catch (err) {
     const dur = Date.now() - start;
-    req.log.error({ err, cnpj, sector, ms: dur }, 'report.create.fail');
+    req.log.error({ err: err.message, ms: dur }, 'report.create.fail');
     console.error('❌ /api/report:', err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
@@ -258,6 +378,8 @@ app.post('/api/report', async (req, res) => {
 app.get('/api/report/:id', async (req, res) => {
   const reportId = req.params.id;
   const start = Date.now();
+  let createdAt = null;
+  let needsUpdate = false;
   try {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Missing Authorization Bearer token' });
@@ -269,7 +391,7 @@ app.get('/api/report/:id', async (req, res) => {
       'SELECT created_at FROM cnpj_reports WHERE report_id = ? LIMIT 1',
       [reportId]
     );
-    const createdAt = createdRows?.[0]?.created_at || null;
+     createdAt = createdRows?.[0]?.created_at || null;
 
     // 2) Gyra: full report
     const resp = await axios.get(
@@ -284,7 +406,7 @@ app.get('/api/report/:id', async (req, res) => {
       [reportId]
     );
     const current = rows?.[0]?.status_value;
-    const needsUpdate =
+    needsUpdate =
       current == null ||
       String(current).trim() === '' ||
       String(current).toUpperCase() === 'PENDING';
@@ -308,15 +430,60 @@ app.get('/api/report/:id', async (req, res) => {
         ]
       );
     }
+    // 4) Update SAP status if Approved
+    const statusFromReport = fullReport?.status?.value || extractReportSummary(fullReport).statusValue;
+    const updateSap = String(statusFromReport || '').toUpperCase() === 'APPROVED';
+    if (updateSap) {
+      try {
+        // 4.1) get the CNPJ saved for this report
+        const [cnpjRows] = await pool.execute(
+          'SELECT cnpj FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+          [reportId]
+        );
+        const cnpjForLookup = cnpjRows?.[0]?.cnpj;
 
-    // 4) Return Gyra data + our DB timestamp
+        if (!cnpjForLookup) {
+          console.warn('Approved but no CNPJ in DB; skipping SAP update');
+          res.set('X-SAP-Update', 'skipped');
+          res.set('X-SAP-Reason', 'NO_CNPJ_IN_DB');
+        } else {
+          // 4.2) resolve CardCode via HANA (CRD7.TaxId0 digits-only match)
+          const cardCode = await getCardCodeByCNPJ_HANA(cnpjForLookup);
+
+          if (!cardCode) {
+            console.warn('CNPJ not found in CRD7.TaxId0; skipping', cnpjForLookup);
+            res.set('X-SAP-Update', 'skipped');
+            res.set('X-SAP-Reason', 'BP_NOT_FOUND_FOR_CNPJ');
+          } else {
+            // 4.3) one login per update → patch U_dtUltimaAnaliseCredito
+            const sap = await sapCreateSession();
+            const todayStr = new Date().toISOString().slice(0, 10); // yyyy-mm-dd
+            await sapUpdateUltimaAnaliseCredito(sap, cardCode, todayStr);
+
+            console.log(`✅ SAP updated U_dtUltimaAnaliseCredito for ${cardCode} (${cnpjForLookup})`);
+            res.set('X-SAP-Update', 'success');
+            res.set('X-SAP-CardCode', cardCode);
+          }
+        }
+      } catch (e) {
+        console.error('❌ SAP update failed:', e.message);
+        res.set('X-SAP-Update', 'skipped');
+        res.set('X-SAP-Reason', 'SAP_UPDATE_ERROR');
+      }
+    } else {
+      // not approved → nothing to do (optional annotation)
+      res.set('X-SAP-Update', 'skipped');
+      res.set('X-SAP-Reason', 'NOT_APPROVED');
+    }
+      
+    // 5) Return Gyra data + our DB timestamp
     const dur = Date.now() - start;
     req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     res.json({...fullReport, createdAt });
 
   } catch (err) {
     const dur = Date.now() - start;
-    req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
+    req.log.error({ err: err.message, reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch.fail');
     console.error('❌ /api/report/:id:', err.response?.data || err.message || err);
     res.status(500).json({ error: err.message || 'Internal error' });
   }
