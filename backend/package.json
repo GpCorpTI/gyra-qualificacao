@@ -8,6 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@sap/hana-client": "^2.27.19",
     "axios": "^1.6.7",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
