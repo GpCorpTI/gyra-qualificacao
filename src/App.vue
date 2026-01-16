@@ -16,8 +16,8 @@
         <router-view />
       </main>
       <footer class="footer">
-        © 2025 GP CORP BR - Todos os direitos reservados <br />
-        Versão 1.0.2025 - Uso exclusivo GP Corp BR - Desenvolvido pelo Departamento de TI
+        © 2026 GP CORP BR - Todos os direitos reservados <br />
+        Versão 1.2.2026 - Uso exclusivo GP Corp BR - Desenvolvido pelo Departamento de TI
       </footer>
     </div>
 

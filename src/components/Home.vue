@@ -1,7 +1,7 @@
 <template>
   <div class="center-layout">
     <div class="home-container home-center">
-      <h1>Motor de Crédito 2025</h1>
+      <h1>Motor de Crédito</h1>
       <p class="subtitle">
         Tempo médio de 30 segundos:
       </p>
