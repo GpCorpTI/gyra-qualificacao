@@ -5,6 +5,7 @@ import { execRows } from '../utils/execRows.js';
 import { normalizeCNPJNumeric, isValidCNPJ, formatCNPJMask } from '../utils/cnpj.js';
 import { getCardCodeByCNPJ_HANA } from '../services/hana.js';
 import { sapCreateSession, sapUpdateUltimaAnaliseCredito } from '../services/sap.js';
+import { logSapCreditUpdate } from '../services/sapLog.js';
 import { notifyApprovedUpdate } from '../services/notifyTeams.js';
 
 const router = express.Router();
@@ -116,8 +117,14 @@ router.get('/report/:id', async (req,res)=>{
           } else {
             const sap = await sapCreateSession();
             const today = new Date().toISOString().slice(0,10);
-            await sapUpdateUltimaAnaliseCredito(sap, cardCode, today);
-
+            await sapUpdateUltimaAnaliseCredito(sap, cardCode, today);   
+            // Table update:
+            await logSapCreditUpdate({
+            reportId,
+            cnpj: cnpjForLookup,
+            cardCode,
+            dateSet: today
+            });
             //  Teams notification
             await notifyApprovedUpdate({ reportId, cnpj: cnpjForLookup, cardCode, dateSet: today });
 
