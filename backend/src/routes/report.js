@@ -5,8 +5,10 @@ import { execRows } from '../utils/execRows.js';
 import { normalizeCNPJNumeric, isValidCNPJ, formatCNPJMask } from '../utils/cnpj.js';
 import { getCardCodeByCNPJ_HANA } from '../services/hana.js';
 import { sapCreateSession, sapUpdateUltimaAnaliseCredito } from '../services/sap.js';
-import { logSapCreditUpdate } from '../services/sapLog.js';
+import { logSapCreditUpdate, findRecentUpdateByCNPJ } from '../services/sapLog.js';
 import { notifyApprovedUpdate } from '../services/notifyTeams.js';
+import { REUSE_DAYS, SAP_UPDATE_COOLDOWN_DAYS } from '../config/env.js';
+
 
 const router = express.Router();
 
@@ -48,7 +50,7 @@ router.post('/report', async (req,res)=>{
       SELECT id, report_id, formatted_cnpj, created_at
       FROM cnpj_reports
       WHERE normalized_cnpj = ?
-        AND created_at > NOW() - INTERVAL 90 DAY
+        AND created_at > NOW() - INTERVAL ${REUSE_DAYS} DAY
       ORDER BY created_at DESC
       LIMIT 1`, [normalized]);
 
@@ -103,41 +105,71 @@ router.get('/report/:id', async (req,res)=>{
     const statusFromReport = fullReport?.status?.value || extractReportSummary(fullReport).statusValue;
     const updateSap = String(statusFromReport||'').toUpperCase()==='APPROVED';
 
-    if (updateSap){
-      try{
-        const rows = await execRows('SELECT cnpj FROM cnpj_reports WHERE report_id = ? LIMIT 1',[reportId]);
+    if (updateSap) {
+      try {
+        const rows = await execRows(
+          'SELECT cnpj FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+          [reportId]
+        );
         const cnpjForLookup = rows?.[0]?.cnpj;
 
-        if (!cnpjForLookup){
-          res.set('X-SAP-Update','skipped'); res.set('X-SAP-Reason','NO_CNPJ_IN_DB');
+        if (!cnpjForLookup) {
+          res.set('X-SAP-Update', 'skipped');
+          res.set('X-SAP-Reason', 'NO_CNPJ_IN_DB');
         } else {
           const cardCode = await getCardCodeByCNPJ_HANA(cnpjForLookup);
-          if (!cardCode){
-            res.set('X-SAP-Update','skipped'); res.set('X-SAP-Reason','BP_NOT_FOUND_FOR_CNPJ');
-          } else {
-            const sap = await sapCreateSession();
-            const today = new Date().toISOString().slice(0,10);
-            await sapUpdateUltimaAnaliseCredito(sap, cardCode, today);   
-            // Table update:
-            await logSapCreditUpdate({
-            reportId,
-            cnpj: cnpjForLookup,
-            cardCode,
-            dateSet: today
-            });
-            //  Teams notification
-            await notifyApprovedUpdate({ reportId, cnpj: cnpjForLookup, cardCode, dateSet: today });
 
-            res.set('X-SAP-Update','success'); res.set('X-SAP-CardCode', cardCode);
+          if (!cardCode) {
+            res.set('X-SAP-Update', 'skipped');
+            res.set('X-SAP-Reason', 'BP_NOT_FOUND_FOR_CNPJ');
+          } else {
+            // Cooldown
+            const recent = await findRecentUpdateByCNPJ(cnpjForLookup, SAP_UPDATE_COOLDOWN_DAYS);
+            if (recent) {
+              res.set('X-SAP-Update', 'skipped');
+              res.set('X-SAP-Reason', 'RECENT_UPDATE_EXISTS');
+              res.set('X-SAP-LastDate', String(recent)); // yyyy-mm-dd
+              res.set('X-SAP-CooldownDays', String(SAP_UPDATE_COOLDOWN_DAYS));
+            } else {
+              try {
+                const sap = await sapCreateSession();
+                const today = new Date().toISOString().slice(0, 10);
+
+                await sapUpdateUltimaAnaliseCredito(sap, cardCode, today);
+
+                //Import log
+                await logSapCreditUpdate({
+                  reportId,
+                  cnpj: cnpjForLookup,
+                  cardCode,
+                  dateSet: today
+                });
+                // Teams 
+                notifyApprovedUpdate({
+                  reportId,
+                  cnpj: cnpjForLookup,
+                  cardCode,
+                  dateSet: today
+                }).catch(e => req.log?.warn?.({ err: e.message }, 'teams.notify.fail'));
+
+                res.set('X-SAP-Update', 'success');
+                res.set('X-SAP-CardCode', cardCode);
+                res.set('X-SAP-DateSet', today);
+              } catch (e) {
+                res.set('X-SAP-Update', 'skipped');
+                res.set('X-SAP-Reason', 'SAP_UPDATE_ERROR');
+                res.set('X-SAP-Error', e.message || 'Unknown');
+              }
+            }
           }
         }
-      }catch(e){
-        res.set('X-SAP-Update','skipped'); res.set('X-SAP-Reason','SAP_UPDATE_ERROR');
+      } catch (e) {
+        res.set('X-SAP-Update', 'skipped');
+        res.set('X-SAP-Reason', 'SAP_UPDATE_ERROR');
+        res.set('X-SAP-Error', e.message || 'Unknown');
+        req.log?.error?.({ err: e.message }, 'sap.flow.fail');
       }
-    } else {
-      res.set('X-SAP-Update','skipped'); res.set('X-SAP-Reason','NOT_APPROVED');
     }
-
     const dur = Date.now()-start;
     req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     res.json({ ...fullReport, createdAt });

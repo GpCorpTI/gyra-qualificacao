@@ -38,3 +38,6 @@ export const TEAMS = {
   url: process.env.TEAMS_URL,
   secret: process.env.TEAMS_SECRET,
 };
+
+export const REUSE_DAYS = Number(process.env.REUSE_DAYS || 90);
+export const SAP_UPDATE_COOLDOWN_DAYS = Number(process.env.SAP_UPDATE_COOLDOWN_DAYS || 45);
