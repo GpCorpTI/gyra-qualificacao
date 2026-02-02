@@ -23,12 +23,15 @@
     </div>
 
     <!-- RESULTADOS AO LADO -->
-    <div class="info-panel" v-if="mainStatus || riskInfo.length || policySummaries.length">
+    <div class="info-panel" v-if="showInfoPanel">
       
       <div v-if="companyName" class="company-header">
         <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
         <p v-if="cnpj" class="company-cnpj">CNPJ: {{ cnpj }}</p>
       </div>
+      <button class="btn-copy" @click="handleCopy" :disabled="!report">
+        Copiar resumo
+      </button>
       <h3>Status Geral:</h3>
       <p><strong>{{ translateStatus(mainStatus) }}</strong></p>
 
@@ -51,14 +54,17 @@
         <strong>Consulta criada em:</strong> {{ formatDateTime(dbCreatedAt) }}
       </div>
     </div>
+    <transition name="fade">
+      <div v-if="toast.visible" class="toast" :class="toast.kind">
+        {{ toast.message }}
+      </div>
+    </transition>
   </div>
 </template>
 
 <script>
-/* eslint-disable vue/multi-word-component-names */
 import { getToken, createReport, getReportById } from '@/services/gyraApi';
-import { extractReportData, translateStatus, cleanDescription, formatDateTime } from '@/utils/reportUtils';
-
+import { extractReportData, translateStatus, cleanDescription, formatDateTime, buildQualificacaoClipboardText } from '@/utils/reportUtils';
 export default {
   data() {
     return {
@@ -71,13 +77,58 @@ export default {
       riskInfo: [],
       policySummaries: [],
       dbCreatedAt: null,
+      toast: { visible: false, message: '', kind: 'ok', _t: null },
     };
+  },
+  computed: {
+    showInfoPanel() {
+      return !this.loading && (this.mainStatus || this.riskInfo.length || this.policySummaries.length);
+    }
   },
   methods: {
     translateStatus,
     cleanDescription,
     formatDateTime,
+    
+    _showToast(message, kind = 'ok', ms = 1800) {
+      this.toast.message = message;
+      this.toast.kind = kind;
+      this.toast.visible = true;
+      clearTimeout(this.toast._t);
+      this.toast._t = setTimeout(() => (this.toast.visible = false), ms);
+    },
 
+    async _copyToClipboard(text) {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch {
+        return false;
+      }
+    },
+    async handleCopy() {
+      if (!this.report) return;
+
+      // Build text exactly like your original template
+      const text = buildQualificacaoClipboardText(this.report);
+
+      const ok = await this._copyToClipboard(text);
+      if (ok) this._showToast('Copiado para a área de transferência ✅', 'ok');
+      else this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
+    },
     async handleCNPJSearch() {
       this.loading = true;
       this.error = '';
@@ -115,3 +166,19 @@ export default {
 };
 </script>
 <style src="@/assets/styles/credito.css"></style>
+
+<style scoped>
+.btn-copy{
+  margin: 8px 0 16px 0;
+  padding: 8px 12px; border: none; border-radius: 10px;
+  background: #1f7aed; color: #fff; font-weight: 600; cursor: pointer;
+}
+.toast{
+  position: fixed; bottom: 18px; right: 18px;
+  padding: 10px 14px; border-radius: 10px; font-weight: 600;
+  background: #1f7aed; color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.15);
+}
+.toast.error{ background:#d93636 }
+.fade-enter-active,.fade-leave-active{ transition: opacity .18s ease }
+.fade-enter-from,.fade-leave-to{ opacity:0 }
+</style>
