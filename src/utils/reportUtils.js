@@ -104,7 +104,7 @@ export function extractReportData(report) {
 // utils/reportUtils.js
 
 export function buildQualificacaoClipboardText(report) {
-  // ----- tiny helpers (scoped) -----
+  // ---- helpers (scoped) ----
   const formatarData = (d) => {
     if (!d) return "N/D";
     const dd = new Date(d);
@@ -118,47 +118,50 @@ export function buildQualificacaoClipboardText(report) {
       .trim();
 
   const normalizarMotivo = (s) => {
-    const low = s.toLowerCase();
+    const t = String(s || "");
+    const low = t.toLowerCase();
     if (low.includes("score bureau") && low.includes("400")) return "Score Bureau menor que 400";
     if (low.includes("sócios com restrição") || low.includes("socios com restricao")) return "Sócio com restrição";
-    return s.charAt(0).toUpperCase() + s.slice(1);
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
   };
 
   const findAll = (obj, key) => {
-    const res = [];
-    if (!obj || typeof obj !== "object") return res;
-    if (Object.prototype.hasOwnProperty.call(obj, key)) res.push(obj[key]);
-    for (const k of Object.keys(obj)) {
-      const v = obj[k];
-      if (v && typeof v === "object") res.push(...findAll(v, key));
-    }
-    return res;
+    const out = [];
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (Object.prototype.hasOwnProperty.call(node, key)) out.push(node[key]);
+      for (const k of Object.keys(node)) walk(node[k]);
+    };
+    walk(report);
+    return out;
   };
 
-  // ----- sections -----
+  // ---- sections ----
   const sections = report?.sections || [];
   const getSection = (type) => sections.find((s) => s?.type?.value === type);
-  const summary = getSection("SUMMARY");
-  const basic = getSection("BASIC_INFORMATION");
+  const summary   = getSection("SUMMARY");
+  const basic     = getSection("BASIC_INFORMATION");
   const relations = getSection("RELATIONS");
 
-  // ===== SCORE / RISCO (texto padrão usa “Altíssimo” quando REJECTED) =====
-  const score =
-    summary?.sectionDetails
-      ?.flatMap((d) => Object.values(d.values || {}))
-      ?.find((v) => v?.title === "Score Serasa")
-      ?.value || "N/D";
+  // =================== SCORE / RISCO ===================
+  const getSummaryItem = (title) =>
+    summary?.sectionDetails?.flatMap((d) => Object.values(d.values || {})).find((v) => v?.title === title);
 
-  const risco = report?.status?.value === "REJECTED" ? "Altíssimo" : "Não crítico"; // mantém padrão do seu script
-  // (Padrão do texto: “Risco: Altíssimo”)
+  const score = getSummaryItem("Score Serasa")?.value || "N/D";
+  const risco = report?.status?.value === "REJECTED" ? "Altíssimo" : "Não crítico";
 
-  // ===== FUNDAÇÃO / TEMPO (anos e meses, sem “241 meses”) =====
+  // =================== DATA ANÁLISE (MOTOR) ===================
+  const dataAnaliseMotor =
+    report?.values?.createdAt ??
+    report?.reportProgress?.finalizedAt ??
+    report?.businessDecisions?.policyDecision?.createdAt ??
+    null;
+
+  // =================== FUNDAÇÃO / TEMPO ===================
   const dataFundacaoStr =
     basic?.sectionDetails?.find((d) => d?.values?.response)?.values?.response?.dataFundacao;
   const dataFundacao = dataFundacaoStr
-    ? new Date(
-        dataFundacaoStr.split(" ")[0].split("/").reverse().join("-")
-      )
+    ? new Date(dataFundacaoStr.split(" ")[0].split("/").reverse().join("-"))
     : null;
 
   let mesesAbertura = "N/D";
@@ -167,104 +170,105 @@ export function buildQualificacaoClipboardText(report) {
     mesesAbertura = Math.floor((Date.now() - dataFundacao.getTime()) / (1000 * 60 * 60 * 24 * 30));
     const anos = Math.floor(mesesAbertura / 12);
     const meses = mesesAbertura % 12;
-    if (anos === 0) tempoAberturaTexto = `${meses} meses`;
+    if (anos === 0)       tempoAberturaTexto = `${meses} meses`;
     else if (meses === 0) tempoAberturaTexto = `${anos} anos`;
-    else tempoAberturaTexto = `${anos} anos e ${meses} meses`;
+    else                  tempoAberturaTexto = `${anos} anos e ${meses} meses`;
   }
-  // (Meses→anos/meses exatamente como seu script)
 
-  // ===== PEFIN (valor, (qtd), resolução) =====
-  const pefin =
-    summary?.sectionDetails
-      ?.flatMap((d) => Object.values(d.values || {}))
-      ?.find((v) => v?.title === "Pefin");
-  const pefinValor = pefin?.value || "R$ 0,00";
-  const pefinQtd = pefin?.subValue || "(0)";
+  // =================== PEFIN / REFIN / PROTESTOS ===================
+  const pefin = getSummaryItem("Pefin");
+  const pefinValor   = pefin?.value || "R$ 0,00";
+  const pefinQtd     = pefin?.subValue || "(0)";
   const pefinRecente = pefin?.resolution || "";
-  // Linha final segue: “Pefin {valor} {qtd} {resolução}”
 
-  // ===== ALTERAÇÃO DE REGIME =====
+  const refin = getSummaryItem("Refin");
+  const refinValor   = refin?.value || "R$ 0,00";
+  const refinQtd     = refin?.subValue || "(0)";
+  const refinRecente = refin?.resolution || "";
+
+  const protestos = getSummaryItem("Protestos");
+  const protestosValor   = protestos?.value || "R$ 0,00";
+  const protestosQtd     = protestos?.subValue || "(0)";
+  const protestosRecente = protestos?.resolution || "";
+
+  // =================== ALTERAÇÃO DE REGIME ===================
   const taxRegimes =
-    basic?.sectionDetails?.flatMap(
-      (d) => d?.values?.historyData?.company?.historyTaxRegimes || []
-    );
+    basic?.sectionDetails?.flatMap((d) => d?.values?.historyData?.company?.historyTaxRegimes || []);
   let alteracaoRegimeTexto = "Não identificadas";
   if (taxRegimes && taxRegimes.length >= 2) {
     const anterior = taxRegimes[taxRegimes.length - 2];
-    const atual = taxRegimes[taxRegimes.length - 1];
+    const atual    = taxRegimes[taxRegimes.length - 1];
     alteracaoRegimeTexto =
       `${anterior?.taxRegime} > ${atual?.taxRegime} ` +
       `Alteração no regime tributário ${formatarData(atual?.changeDate)}`;
   }
-  // (Formato exatamente como no script)
 
-  // ===== SÓCIO =====
+  // =================== SÓCIO ===================
   const socio =
-    relations?.sectionDetails?.flatMap((d) => d?.values?.relationships || [])?.find((r) =>
-      String(r?.relationshipLevel || "").includes("Sócio")
-    );
-  const socioNome = socio?.name || "N/D";
-  const socioCpf = socio?.document || "N/D";
+    relations?.sectionDetails?.flatMap((d) => d?.values?.relationships || [])
+      ?.find((r) => String(r?.relationshipLevel || "").includes("Sócio"));
+  const socioNome  = socio?.name || "N/D";
+  const socioCpf   = socio?.document || "N/D";
   const socioDesde = socio?.formattedStartDate || "N/D";
 
-  // ===== MOTIVOS “À VISTA” -> conjunto (seus calculados + motor DENIED) =====
+  // =================== MOTIVOS (SEUS + MOTOR) ===================
   const motivosSet = new Set();
-  // calculados por você
-  const pefinNumerico = parseFloat(pefinValor.replace(/[^\d,]/g, "").replace(",", "."));
-  if (!Number.isNaN(pefinNumerico) && pefinNumerico > 0) {
+
+  // seus (mesmos do script)
+  const pefinNum = parseFloat((pefinValor || "0").replace(/[^\d,]/g, "").replace(",", "."));
+  if (!Number.isNaN(pefinNum) && pefinNum > 0)
     motivosSet.add("Valor total em pefin nos últimos 3 anos maior que 0");
-  }
-  if (!Number.isNaN(Number(score)) && Number(score) < 400) {
+
+  if (!Number.isNaN(Number(score)) && Number(score) < 400)
     motivosSet.add("Score Bureau menor que 400");
-  }
-  if (mesesAbertura !== "N/D" && mesesAbertura < 11) {
+
+  if (mesesAbertura !== "N/D" && Number.isFinite(mesesAbertura) && mesesAbertura < 11)
     motivosSet.add("Tempo de abertura da empresa em meses menor que 11");
-  }
-  // (Mesmas três regras do seu script)
 
-  // do motor (policyRuleResults DENIED)
-  const coletarMotivosDoMotor = (rep) => {
-    const out = [];
-    const groups =
-      rep?.policyRuleGroupResults ||
-      rep?.values?.policyRuleGroupResults ||
-      rep?.businessDecisions?.policyRuleGroupResults ||
-      [];
-    const groupsFallback = groups.length ? groups : findAll(rep, "policyRuleGroupResults").flat();
-    const alvo = groupsFallback.filter((g) =>
-      (g?.policyRuleGroup?.name || g?.name || "").toLowerCase().includes("motivos reprovação")
-    );
-    const gruposParaLer = alvo.length ? alvo : groupsFallback;
+  const protestosNum = parseFloat((protestosValor || "0").replace(/[^\d,]/g, "").replace(",", "."));
+  if (!Number.isNaN(protestosNum) && protestosNum > 0)
+    motivosSet.add("Valor total em protestos nos últimos 3 anos");
 
-    for (const g of gruposParaLer) {
-      const joins = g?.policyRuleResultJoins || [];
-      for (const j of joins) {
-        const results = j?.policyRuleResults || [];
-        for (const r of results) {
-          if (r?.status?.key === "DENIED") {
-            const desc = limparDescricao(r?.descriptions || "");
-            if (desc) out.push(normalizarMotivo(desc));
-          }
+  // do motor (DENIED)
+  const groups =
+    report?.policyRuleGroupResults ??
+    report?.values?.policyRuleGroupResults ??
+    report?.businessDecisions?.policyRuleGroupResults ??
+    [];
+  const groupsFallback = groups.length ? groups : (findAll(report, "policyRuleGroupResults").flat?.() || []);
+  const alvo = groupsFallback.filter((g) =>
+    (g?.policyRuleGroup?.name || g?.name || "").toLowerCase().includes("motivos reprovação")
+  );
+  const gruposParaLer = alvo.length ? alvo : groupsFallback;
+
+  for (const g of gruposParaLer) {
+    const joins = g?.policyRuleResultJoins || [];
+    for (const j of joins) {
+      const results = j?.policyRuleResults || [];
+      for (const r of results) {
+        if (r?.status?.key === "DENIED") {
+          const desc = limparDescricao(r?.descriptions || "");
+          if (desc) motivosSet.add(normalizarMotivo(desc));
         }
       }
     }
-    // remove duplicados preservando ordem
-    return [...new Set(out)];
-  };
-  coletarMotivosDoMotor(report).forEach((m) => motivosSet.add(m));
+  }
+
   const motivos = Array.from(motivosSet);
 
-  // ===== TEXTO FINAL (idêntico ao padrão do seu script) =====
-  // Cabeçalho / blocos / quebras de linha na mesma ordem e rotulagem.
-  const texto = `
-Cadastro Rápido cliente a vista 
+  // =================== TEXTO FINAL (idêntico ao seu script) ===================
+  return `
+Cadastro Rápido cliente a vista
+Vendedor: Marketing
 
 Score: ${score}
 Risco: ${risco}
 
 Fundação: ${formatarData(dataFundacao)} - ${tempoAberturaTexto}
-Possui restrição: 
+Possui restrição:
 Pefin ${pefinValor} ${pefinQtd} ${pefinRecente}
+Refin ${refinValor}${refinQtd} ${refinRecente}
+Protestos ${protestosValor}${protestosQtd} ${protestosRecente}
 
 Alterações:
 ${alteracaoRegimeTexto}
@@ -274,11 +278,12 @@ Nome: ${socioNome}
 Cpf: ${socioCpf}
 Sócio desde: ${socioDesde}
 
+
 Por que ficou à vista?
 ${motivos.map((m) => `- ${m}`).join("\n")}
-`.trim();
 
-  return texto;
+Análise realizada pelo motor em: ${formatarData(dataAnaliseMotor)}
+`.trim();
 }
 
 export function buildClipboardFromReport(report, opts = {}) {
