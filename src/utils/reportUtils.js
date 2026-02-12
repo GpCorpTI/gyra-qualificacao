@@ -203,13 +203,34 @@ export function buildQualificacaoClipboardText(report) {
       `Alteração no regime tributário ${formatarData(atual?.changeDate)}`;
   }
 
-  // =================== SÓCIO ===================
-  const socio =
-    relations?.sectionDetails?.flatMap((d) => d?.values?.relationships || [])
-      ?.find((r) => String(r?.relationshipLevel || "").includes("Sócio"));
-  const socioNome  = socio?.name || "N/D";
-  const socioCpf   = socio?.document || "N/D";
-  const socioDesde = socio?.formattedStartDate || "N/D";
+// ===== SÓCIOS (todos) =====
+  const sociosRaw =
+    relations?.sectionDetails
+      ?.flatMap(d => d?.values?.relationships || [])
+      ?.filter(r => String(r?.relationshipLevel || '').includes('Sócio')) || [];
+
+  const seenSocios = new Set();
+  const socios = [];
+  for (const r of sociosRaw) {
+    const name = (r?.name || '').trim();
+    const doc  = (r?.document || '').trim();
+    const key = `${name}|${doc}`;
+    if (seenSocios.has(key)) continue;
+    seenSocios.add(key);
+    socios.push({
+      name,
+      document: doc,
+      since: r?.formattedStartDate || 'N/D',
+    });
+  }
+
+  // Texto dos sócios para o clipboard
+  const sociosTexto = socios.length
+    ? socios.map(s =>
+        `Nome: ${s.name || 'N/D'}\nCpf: ${s.document || 'N/D'}\nSócio desde: ${s.since}`
+      ).join('\n\n')
+    : `Nome: N/D\nCpf: N/D\nSócio desde: N/D`;
+
 
   // =================== MOTIVOS (SEUS + MOTOR) ===================
   const motivosSet = new Set();
@@ -273,11 +294,8 @@ Protestos ${protestosValor}${protestosQtd} ${protestosRecente}
 Alterações:
 ${alteracaoRegimeTexto}
 
-Sócio:
-Nome: ${socioNome}
-Cpf: ${socioCpf}
-Sócio desde: ${socioDesde}
-
+Sócios:
+${sociosTexto}
 
 Por que ficou à vista?
 ${motivos.map((m) => `- ${m}`).join("\n")}
