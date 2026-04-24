@@ -19,6 +19,7 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 700);
+const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPTitulosEmAberto"';
 const app = express();
 app.use(express.json());
@@ -389,7 +390,7 @@ async function requestGyraToken() {
         'gyra-client-secret': process.env.GYRA_CLIENT_SECRET,
         'Content-Type': 'application/json',
       },
-      timeout: 10000,
+      timeout: GYRA_HTTP_TIMEOUT_MS,
     }
   );
 
@@ -400,7 +401,10 @@ async function createGyraReport(token, normalizedCnpj, policyId) {
   const created = await axios.post(
     'https://gyra-core.gyramais.com.br/report',
     { document: normalizedCnpj, policyId },
-    { headers: { Authorization: `Bearer ${token}` } }
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: GYRA_HTTP_TIMEOUT_MS,
+    }
   );
 
   return created.data?.id || created.data?.reportId;
@@ -409,7 +413,10 @@ async function createGyraReport(token, normalizedCnpj, policyId) {
 async function fetchGyraReport(token, reportId) {
   const response = await axios.get(
     `https://gyra-core.gyramais.com.br/report/${reportId}`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: GYRA_HTTP_TIMEOUT_MS,
+    }
   );
 
   return response.data;
@@ -966,7 +973,7 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
         'Indicadores SAP',
         procedureRows.length ? 'Leitura do retorno atual' : 'Sem base para indicadores',
         procedureRows.length
-          ? 'Percentual em atraso calculado sobre o saldo total em aberto retornado pela procedure.'
+          ? 'Valor mensal soma os saldos com vencimento no mes atual. Percentual em atraso considera a quantidade de notas atrasadas.'
           : 'Os indicadores dependem de linhas retornadas pela procedure.',
         {
           table: {
@@ -978,7 +985,9 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
               {
                 id: 'valor-pago-mes',
                 indicador: 'Valor total pago no mes',
-                valor: 'Indisponivel nesta procedure',
+                valor: procedureRows.length
+                  ? formatSapProcedureCurrency(procedureSummary.currentMonthBalance)
+                  : '-',
               },
               {
                 id: 'percentual-atraso',
@@ -1303,6 +1312,25 @@ function formatSapProcedureCurrency(value) {
   return parsed.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function parseSapProcedureDate(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const brDate = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brDate) {
+    const [, day, month, year] = brDate;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function parseSapProcedureInteger(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -1352,16 +1380,22 @@ function formatSapMetricPercent(value) {
 }
 
 function summarizeSapProcedureRows(rows = []) {
+  const today = new Date();
+  const currentMonth = today.getMonth();
+  const currentYear = today.getFullYear();
+
   if (!Array.isArray(rows) || !rows.length) {
     return {
-      totalOpenBalance: 0,
-      overdueBalance: 0,
+      currentMonthBalance: 0,
+      overdueCount: 0,
+      totalInvoiceCount: 0,
       overduePercent: null,
     };
   }
 
-  let totalOpenBalance = 0;
-  let overdueBalance = 0;
+  let currentMonthBalance = 0;
+  let overdueCount = 0;
+  let totalInvoiceCount = 0;
 
   rows.forEach((row) => {
     const saldo = parseCurrencyBR(
@@ -1370,17 +1404,29 @@ function summarizeSapProcedureRows(rows = []) {
     const diferenca = parseSapProcedureInteger(
       findRowValueByHints(row, ['diferenca', 'dias', 'atraso'])
     );
+    const vencimento = parseSapProcedureDate(
+      findRowValueByHints(row, ['vencimento', 'duedate', 'dataven', 'venc', 'due'])
+    );
 
-    totalOpenBalance += saldo;
+    totalInvoiceCount += 1;
     if (diferenca != null && diferenca > 0) {
-      overdueBalance += saldo;
+      overdueCount += 1;
+    }
+
+    if (
+      vencimento &&
+      vencimento.getMonth() === currentMonth &&
+      vencimento.getFullYear() === currentYear
+    ) {
+      currentMonthBalance += saldo;
     }
   });
 
   return {
-    totalOpenBalance,
-    overdueBalance,
-    overduePercent: totalOpenBalance > 0 ? (overdueBalance / totalOpenBalance) * 100 : null,
+    currentMonthBalance,
+    overdueCount,
+    totalInvoiceCount,
+    overduePercent: totalInvoiceCount > 0 ? (overdueCount / totalInvoiceCount) * 100 : null,
   };
 }
 

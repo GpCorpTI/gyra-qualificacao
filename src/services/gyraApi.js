@@ -3,7 +3,25 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: '/api', // same-origin, works with any host/port
+  timeout: 120000,
 });
+
+function normalizeApiError(error) {
+  if (error.code === 'ECONNABORTED') {
+    return new Error('A consulta demorou mais que o esperado. Tente novamente em instantes.');
+  }
+
+  if (!error.response) {
+    return new Error('Nao consegui concluir a conexao com o backend do MARCI. Verifique a rede ou tente novamente.');
+  }
+
+  return error;
+}
+
+api.interceptors.response.use(
+  response => response,
+  error => Promise.reject(normalizeApiError(error))
+);
 
 // calls:
 export async function getToken() {
