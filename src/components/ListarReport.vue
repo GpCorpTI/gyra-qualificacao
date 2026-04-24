@@ -88,7 +88,7 @@
 import { getToken, listReports, getReportById } from '@/services/gyraApi';
 import { extractReportData, translateStatus, cleanDescription, formatDateTime } from '@/utils/reportUtils';
 
-const BASE = process.env.VUE_APP_BACKEND_URL || 'http://192.168.87.79:8080';
+const BASE = process.env.VUE_APP_BACKEND_URL || 'http://192.168.87.87:8080';
 
 export default {
   name: 'ListarReport',

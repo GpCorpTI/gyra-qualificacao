@@ -1,7 +1,7 @@
 <template>
   <div id="app" class="layout-wrapper">
     <aside class="sidebar">
-      <router-link to="/motorcredito">
+      <router-link :to="{ name: 'main' }">
         <img src="@/assets/gp_imports_logo.png" alt="Logo" class="logo" />
       </router-link>
 

@@ -20,6 +20,25 @@ export function mountSPA(app) {
     // throw new Error(`Frontend build not found at ${indexPath}`);
   }
 
-  app.use('/motorcredito', express.static(distPath, { maxAge: '7d', etag: true }));
-  app.get('/motorcredito/*', (_req, res) => res.sendFile(indexPath));
+  app.get('/', (_req, res) => {
+    res.redirect('/motorcredito/');
+  });
+
+  app.use(
+    '/motorcredito',
+    express.static(distPath, {
+      maxAge: '7d',
+      etag: true,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        }
+      },
+    })
+  );
+
+  app.get('/motorcredito/*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(indexPath);
+  });
 }

@@ -29,9 +29,21 @@
         <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
         <p v-if="cnpj" class="company-cnpj">CNPJ: {{ cnpj }}</p>
       </div>
-      <button class="btn-copy" @click="handleCopy" :disabled="!report">
-        Copiar resumo
-      </button>
+
+      <div class="btn-group">
+        <button class="btn-copy" @click="handleCopy" :disabled="!report">
+          Copiar resumo
+        </button>
+
+        <button
+          class="btn-pdf"
+          @click="handleGerarPdf"
+          :disabled="!report || loadingPdf"
+        >
+          {{ loadingPdf ? "Gerando PDF..." : "⬇ Gerar PDF" }}
+        </button>
+      </div>
+
       <h3>Status Geral:</h3>
       <p><strong>{{ translateStatus(mainStatus) }}</strong></p>
 
@@ -54,6 +66,7 @@
         <strong>Consulta criada em:</strong> {{ formatDateTime(dbCreatedAt) }}
       </div>
     </div>
+
     <transition name="fade">
       <div v-if="toast.visible" class="toast" :class="toast.kind">
         {{ toast.message }}
@@ -64,12 +77,21 @@
 
 <script>
 import { getToken, createReport, getReportById } from '@/services/gyraApi';
-import { extractReportData, translateStatus, cleanDescription, formatDateTime, buildQualificacaoClipboardText } from '@/utils/reportUtils';
+import {
+  extractReportData,
+  translateStatus,
+  cleanDescription,
+  formatDateTime,
+  buildQualificacaoClipboardText,
+} from '@/utils/reportUtils';
+import { buildOdgPayload } from '@/utils/buildOdgPayload';
+
 export default {
   data() {
     return {
       cnpj: '',
       loading: false,
+      loadingPdf: false,
       error: '',
       report: null,
       companyName: '',
@@ -80,16 +102,19 @@ export default {
       toast: { visible: false, message: '', kind: 'ok', _t: null },
     };
   },
+
   computed: {
     showInfoPanel() {
       return !this.loading && (this.mainStatus || this.riskInfo.length || this.policySummaries.length);
-    }
+    },
   },
+
   methods: {
     translateStatus,
     cleanDescription,
     formatDateTime,
-    
+
+    // ── toast ────────────────────────────────────────────────────────────────
     _showToast(message, kind = 'ok', ms = 1800) {
       this.toast.message = message;
       this.toast.kind = kind;
@@ -98,13 +123,13 @@ export default {
       this.toast._t = setTimeout(() => (this.toast.visible = false), ms);
     },
 
+    // ── clipboard ────────────────────────────────────────────────────────────
     async _copyToClipboard(text) {
       try {
         if (navigator?.clipboard?.writeText) {
           await navigator.clipboard.writeText(text);
           return true;
         }
-        // Fallback
         const ta = document.createElement('textarea');
         ta.value = text;
         ta.setAttribute('readonly', '');
@@ -119,20 +144,63 @@ export default {
         return false;
       }
     },
+
     async handleCopy() {
       if (!this.report) return;
-
-      // Build text exactly like your original template
       const text = buildQualificacaoClipboardText(this.report);
-
       const ok = await this._copyToClipboard(text);
       if (ok) this._showToast('Copiado para a área de transferência ✅', 'ok');
-      else this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
+      else    this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
     },
+
+    // ── gerar PDF ────────────────────────────────────────────────────────────
+    async handleGerarPdf() {
+      if (!this.report) return;
+
+      this.loadingPdf = true;
+      try {
+        // Monta o payload com os dados do relatório mapeados para os campos do ODG
+        const dados = buildOdgPayload(this.report);
+
+        // Chama o endpoint do seu backend que executa o preencher_odg.js
+        // O backend deve receber { dados } e devolver o PDF como blob
+        const response = await fetch('/api/gerar-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dados }),
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.message || `Erro ${response.status} ao gerar PDF`);
+        }
+
+        // Faz o download automático do PDF no navegador
+        const blob = await response.blob();
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        const nomeArquivo = `relatorio_${(this.companyName || this.cnpj).replace(/\s+/g, '_')}.pdf`;
+        a.href     = url;
+        a.download = nomeArquivo;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        this._showToast('PDF gerado com sucesso ✅', 'ok', 2500);
+      } catch (err) {
+        console.error('❌ handleGerarPdf:', err);
+        this._showToast(`Erro ao gerar PDF: ${err.message}`, 'error', 3500);
+      } finally {
+        this.loadingPdf = false;
+      }
+    },
+
+    // ── consulta CNPJ ────────────────────────────────────────────────────────
     async handleCNPJSearch() {
       this.loading = true;
-      this.error = '';
-      this.report = null;
+      this.error   = '';
+      this.report  = null;
       this.companyName = '';
 
       try {
@@ -142,18 +210,18 @@ export default {
           token,
           cnpj: this.cnpj,
           policyId: process.env.VUE_APP_GYRA_POLICY_ID,
-          sector: 'CRDT' //CREDITO
+          sector: 'CRDT',
         });
         const reportId = created.reportId || created.id;
 
         const fullReport = await getReportById({ token, reportId });
-        this.report = fullReport;
+        this.report      = fullReport;
         this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
         const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
-        this.companyName = companyName;
-        this.mainStatus = mainStatus;
-        this.riskInfo = riskInfo;
+        this.companyName    = companyName;
+        this.mainStatus     = mainStatus;
+        this.riskInfo       = riskInfo;
         this.policySummaries = policySummaries;
       } catch (err) {
         console.error('❌ Marketing.handleCNPJSearch:', err);
@@ -165,20 +233,58 @@ export default {
   },
 };
 </script>
+
 <style src="@/assets/styles/credito.css"></style>
 
 <style scoped>
-.btn-copy{
+.btn-group {
+  display: flex;
+  gap: 8px;
   margin: 8px 0 16px 0;
-  padding: 8px 12px; border: none; border-radius: 10px;
-  background: #1f7aed; color: #fff; font-weight: 600; cursor: pointer;
+  flex-wrap: wrap;
 }
-.toast{
-  position: fixed; bottom: 18px; right: 18px;
-  padding: 10px 14px; border-radius: 10px; font-weight: 600;
-  background: #1f7aed; color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.15);
+
+.btn-copy,
+.btn-pdf {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
 }
-.toast.error{ background:#d93636 }
-.fade-enter-active,.fade-leave-active{ transition: opacity .18s ease }
-.fade-enter-from,.fade-leave-to{ opacity:0 }
+
+.btn-copy {
+  background: #1f7aed;
+  color: #fff;
+}
+
+.btn-pdf {
+  background: #16a34a;
+  color: #fff;
+}
+
+.btn-copy:disabled,
+.btn-pdf:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  background: #1f7aed;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+}
+.toast.error { background: #d93636; }
+
+.fade-enter-active,
+.fade-leave-active { transition: opacity 0.18s ease; }
+.fade-enter-from,
+.fade-leave-to { opacity: 0; }
 </style>

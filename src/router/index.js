@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import MainPage from '@/components/MainPage.vue'
 import QualificarCliente from '@/components/QualificarCliente.vue'
 import Marketing from '@/components/Marketing.vue'
 import Home from '@/components/Home.vue'
@@ -6,12 +7,17 @@ import PinPage from '@/components/PinPage.vue'
 import ListarReport from '@/components/ListarReport.vue'
 import ComercialPage from '@/components/ComercialPage.vue'
 import MarketingPinPage from '@/components/MarketingPinPage.vue'
+import MarciPage from '@/components/MarciPage.vue'
+import MarciPinPage from '@/components/MarciPinPage.vue'
 
 
 const routes = [
-  { path: '/',                name: 'home',         component: Home },
+  { path: '/',                name: 'main',         component: MainPage },
+  { path: '/motor-de-credito',name: 'home',         component: Home },
+  { path: '/marci',           name: 'marci',        component: MarciPage, meta: { requiresMarciAuth: true } },
   { path: '/pin',             name: 'pin',          component: PinPage },
   { path: '/pin-marketing',   name: 'pinMkt',       component: MarketingPinPage},
+  { path: '/pin-marci',       name: 'pinMarci',     component: MarciPinPage },
   { path: '/credito',         name: 'credito',      component: QualificarCliente, meta: { requiresAuth: true } },
   { path: '/marketing',       name: 'marketing',    component: Marketing,         meta: {requiresMarketingAuth : true} },
   { path: '/listarreport',    name: 'listarreport', component: ListarReport,      meta: { requiresAuth: true } },
@@ -59,6 +65,25 @@ router.beforeEach((to, from, next) => {
       localStorage.removeItem('marketingAccessGranted')
       localStorage.removeItem('marketingAccessExpiresAt')
       next('/pin-marketing')
+    }
+  } else {
+    next()
+  }
+})
+
+router.beforeEach((to, from, next) => {
+  if (to.meta.requiresMarciAuth) {
+    const granted = localStorage.getItem('marciAccessGranted')
+    const expiresAt = parseInt(localStorage.getItem('marciAccessExpiresAt'), 10)
+    const now = Date.now()
+
+    if (granted === 'true' && expiresAt && now < expiresAt) {
+      next()
+    } else {
+      localStorage.setItem('redirectAfterPinMarci', to.fullPath)
+      localStorage.removeItem('marciAccessGranted')
+      localStorage.removeItem('marciAccessExpiresAt')
+      next('/pin-marci')
     }
   } else {
     next()

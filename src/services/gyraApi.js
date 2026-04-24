@@ -24,3 +24,13 @@ export async function listReports() {
   const { data } = await api.get('/reports');
   return data;
 }
+
+export async function getMarciGyraSummary({ cnpj, policyId }) {
+  const { data } = await api.post('/marci/gyra-summary', { cnpj, policyId });
+  return data;
+}
+
+export async function sendMarciMessage({ message, history = [], policyId }) {
+  const { data } = await api.post('/marci/chat', { message, history, policyId });
+  return data;
+}

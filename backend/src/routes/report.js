@@ -1,6 +1,9 @@
 import express from 'express';
 import axios from 'axios';
 import XLSX from 'xlsx';
+import fs   from 'fs';
+import path from 'path';
+import os   from 'os';
 import { execRows } from '../utils/execRows.js';
 import { normalizeCNPJNumeric, isValidCNPJ, formatCNPJMask } from '../utils/cnpj.js';
 import { getCardCodeByCNPJ_HANA } from '../services/hana.js';
@@ -8,10 +11,15 @@ import { sapCreateSession, sapUpdateUltimaAnaliseCredito } from '../services/sap
 import { logSapCreditUpdate, findRecentUpdateByCNPJ } from '../services/sapLog.js';
 import { notifyApprovedUpdate } from '../services/notifyTeams.js';
 import { REUSE_DAYS, SAP_UPDATE_COOLDOWN_DAYS } from '../config/env.js';
+import { fileURLToPath } from 'url';
+import { preencherOdg, converterParaPdf } from './preencher_odg.js';
 
+
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEMPLATE_ODG = path.resolve(__dirname, '../templates/PDF_MOTOR_textbox.odg');
 
 const router = express.Router();
-
 function cleanDescription(text){ return (text||'').replace(/\{\{.*?\}\}/g,'').trim(); }
 function extractCompanyName(r){ const s=r?.sections||[]; for(const sec of s){ for(const det of (sec.sectionDetails||[])){ const v=det?.values||{}; if (typeof v.name==='string' && v.name.trim()) return v.name.trim(); } } return ''; }
 function extractReportSummary(report){
@@ -215,4 +223,38 @@ router.get('/reports.xlsx', async (_req,res)=>{
   }catch(err){ res.status(500).json({ error: err.message }); }
 });
 
+router.post('/gerar-pdf', async (req, res) => {
+  const { dados } = req.body;
+ 
+  if (!dados || typeof dados !== 'object') {
+    return res.status(400).json({ error: 'Campo "dados" ausente ou inválido.' });
+  }
+ 
+  // Pasta temporária isolada por requisição (evita conflito de arquivos simultâneos)
+  const tmpDir   = fs.mkdtempSync(path.join(os.tmpdir(), 'odg-'));
+  const odgSaida = path.join(tmpDir, 'relatorio_preenchido.odg');
+ 
+  try {
+    preencherOdg(TEMPLATE_ODG, odgSaida, dados);
+    const caminhoPdf = converterParaPdf(odgSaida, tmpDir);
+ 
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="relatorio.pdf"');
+ 
+    const stream = fs.createReadStream(caminhoPdf);
+    stream.pipe(res);
+ 
+    stream.on('end',   () => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    stream.on('error', (err) => {
+      req.log?.error({ err: err.message }, 'gerar-pdf.stream.fail');
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      if (!res.headersSent) res.status(500).json({ error: 'Erro ao enviar o PDF.' });
+    });
+ 
+  } catch (err) {
+    req.log?.error({ err: err.message }, 'gerar-pdf.fail');
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    res.status(500).json({ error: err.message });
+  }
+});
 export default router;
