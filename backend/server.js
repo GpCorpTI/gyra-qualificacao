@@ -18,7 +18,7 @@ const MARCI_GYRA_REUSE_DAYS = Number(process.env.MARCI_GYRA_REUSE_DAYS || 45);
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
-const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 700);
+const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1200);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPTitulosEmAberto"';
 const app = express();
@@ -627,16 +627,24 @@ function buildMarciGyraPendingMessage(summary) {
 function buildMarciGyraClaudeSystemPrompt() {
   return [
     'Voce e MARCI, um assistente analitico de credito focado exclusivamente em interpretar retornos reais do GYRA+.',
-    'Sua tarefa e analisar o payload completo do GYRA+ fornecido pelo backend e responder em portugues do Brasil.',
+    'Sua tarefa nao e apenas resumir: voce deve diagnosticar a situacao de credito, interpretar sinais, cruzar evidencias internas do relatorio e apontar oportunidades comerciais ou operacionais quando os dados sustentarem essa leitura.',
+    'Analise o payload completo do GYRA+ fornecido pelo backend e responda em portugues do Brasil.',
     'Considere o conjunto completo das informacoes disponiveis, incluindo status, score, risco, regras da politica, alertas, restricoes, faturamento, limite recomendado, coerencia entre dados, inconsistencias e quaisquer sinais relevantes para analise de credito.',
-    'Sua analise deve priorizar o que realmente importa para decisao de credito: capacidade, risco, alertas de politica, proporcionalidade entre faturamento e limite, pontos de cautela e sinais positivos.',
+    'Sua analise deve priorizar o que realmente importa para decisao de credito: capacidade de pagamento, estabilidade cadastral, risco, alertas de politica, proporcionalidade entre faturamento e limite, pontos de cautela, sinais positivos, socios atuais e qualquer indicio de oportunidade.',
+    'Traga insights praticos: explique o que o dado sugere, por que importa para credito e qual acao comercial ou analitica pode fazer sentido.',
+    'Quando houver oportunidade, diferencie oportunidade de credito, oportunidade comercial e oportunidade de acompanhamento. Exemplo: limite conservador frente ao faturamento, cliente com boa leitura mas dados incompletos, necessidade de atualizar cadastro, ou potencial para revisao controlada de limite.',
+    'Quando houver risco, seja especifico sobre o motivo: regra acionada, score fraco, restricao, incoerencia, ausencia de dados, limite desproporcional, faturamento incerto ou outro sinal presente no relatorio.',
+    'Estruture mentalmente a resposta como: diagnostico geral, sinais positivos, pontos de cautela, oportunidades e encaminhamento recomendado. Nao use markdown; escreva em paragrafos curtos no campo answer.',
     'Nao invente valores, nao conclua aprovacao final, nao crie regras de negocio que nao estejam nos dados e nao diga que viu algo se isso nao estiver presente no retorno.',
     'Se algum dado estiver ausente ou inconclusivo, deixe isso explicito de forma objetiva.',
-    'Escreva uma resposta analitica, clara e profissional, como se estivesse apoiando um analista de credito ou comercial.',
+    'Escreva uma resposta analitica, clara e profissional, como se estivesse apoiando um analista de credito ou comercial a tomar a proxima decisao.',
     'Retorne somente JSON valido, sem markdown, sem comentarios e sem texto fora do JSON.',
     'O JSON deve seguir exatamente esta forma: {"answer":"texto","highlights":["item1"],"warnings":["item1"],"suggestions":["item1","item2"]}.',
-    'No campo answer, entregue uma sintese analitica com leitura de credito baseada no retorno inteiro do GYRA+.',
-    'Use entre 2 e 5 highlights, entre 0 e 4 warnings e entre 0 e 2 suggestions.',
+    'No campo answer, entregue uma analise de credito com insights e oportunidades, nao um resumo simples. Use entre 180 e 320 palavras quando houver dados suficientes.',
+    'Em highlights, liste os principais achados e oportunidades sustentadas pelos dados.',
+    'Em warnings, liste pontos de cautela ou lacunas relevantes para decisao.',
+    'Em suggestions, proponha proximas perguntas uteis ao MARCI, curtas e acionaveis.',
+    'Use entre 3 e 6 highlights, entre 0 e 5 warnings e entre 0 e 3 suggestions.',
   ].join(' ');
 }
 
@@ -713,9 +721,9 @@ async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport }) {
 
   return {
     answer: parsed.answer.trim(),
-    highlights: Array.isArray(parsed.highlights) ? parsed.highlights.filter(Boolean).slice(0, 4) : [],
-    warnings: Array.isArray(parsed.warnings) ? parsed.warnings.filter(Boolean).slice(0, 3) : [],
-    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.filter(Boolean).slice(0, 2) : [],
+    highlights: Array.isArray(parsed.highlights) ? parsed.highlights.filter(Boolean).slice(0, 6) : [],
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings.filter(Boolean).slice(0, 5) : [],
+    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.filter(Boolean).slice(0, 3) : [],
     rawText: contentText,
     usage,
     model: response.data?.model || ANTHROPIC_MODEL,
@@ -977,6 +985,7 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
           : 'Os indicadores dependem de linhas retornadas pela procedure.',
         {
           table: {
+            variant: 'metrics',
             columns: [
               { key: 'indicador', label: 'Indicador' },
               { key: 'valor', label: 'Valor' },
@@ -990,14 +999,22 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
                   : '-',
               },
               {
-                id: 'percentual-atraso',
-                indicador: 'Percentual em atraso',
+                id: 'percentual-atraso-ano-atual',
+                indicador: 'Percentual em atraso ano atual',
                 valor: procedureRows.length
-                  ? formatSapMetricPercent(procedureSummary.overduePercent)
+                  ? formatSapMetricPercent(procedureSummary.currentYearOverduePercent)
+                  : '-',
+              },
+              {
+                id: 'percentual-atraso-ano-passado',
+                indicador: 'Percentual em atraso ano passado',
+                valor: procedureRows.length
+                  ? formatSapMetricPercent(procedureSummary.previousYearOverduePercent)
                   : '-',
               },
             ],
           },
+          emphasis: 'wide',
         }
       ),
       buildMarciCard(
@@ -1383,19 +1400,25 @@ function summarizeSapProcedureRows(rows = []) {
   const today = new Date();
   const currentMonth = today.getMonth();
   const currentYear = today.getFullYear();
+  const previousYear = currentYear - 1;
 
   if (!Array.isArray(rows) || !rows.length) {
     return {
       currentMonthBalance: 0,
-      overdueCount: 0,
-      totalInvoiceCount: 0,
-      overduePercent: null,
+      currentYearOverdueCount: 0,
+      currentYearInvoiceCount: 0,
+      currentYearOverduePercent: null,
+      previousYearOverdueCount: 0,
+      previousYearInvoiceCount: 0,
+      previousYearOverduePercent: null,
     };
   }
 
   let currentMonthBalance = 0;
-  let overdueCount = 0;
-  let totalInvoiceCount = 0;
+  let currentYearOverdueCount = 0;
+  let currentYearInvoiceCount = 0;
+  let previousYearOverdueCount = 0;
+  let previousYearInvoiceCount = 0;
 
   rows.forEach((row) => {
     const saldo = parseCurrencyBR(
@@ -1408,11 +1431,6 @@ function summarizeSapProcedureRows(rows = []) {
       findRowValueByHints(row, ['vencimento', 'duedate', 'dataven', 'venc', 'due'])
     );
 
-    totalInvoiceCount += 1;
-    if (diferenca != null && diferenca > 0) {
-      overdueCount += 1;
-    }
-
     if (
       vencimento &&
       vencimento.getMonth() === currentMonth &&
@@ -1420,13 +1438,35 @@ function summarizeSapProcedureRows(rows = []) {
     ) {
       currentMonthBalance += saldo;
     }
+
+    if (!vencimento) return;
+
+    const dueYear = vencimento.getFullYear();
+    const isOverdue = diferenca != null && diferenca > 0;
+
+    if (dueYear === currentYear) {
+      currentYearInvoiceCount += 1;
+      if (isOverdue) currentYearOverdueCount += 1;
+    }
+
+    if (dueYear === previousYear) {
+      previousYearInvoiceCount += 1;
+      if (isOverdue) previousYearOverdueCount += 1;
+    }
   });
 
   return {
     currentMonthBalance,
-    overdueCount,
-    totalInvoiceCount,
-    overduePercent: totalInvoiceCount > 0 ? (overdueCount / totalInvoiceCount) * 100 : null,
+    currentYearOverdueCount,
+    currentYearInvoiceCount,
+    currentYearOverduePercent: currentYearInvoiceCount > 0
+      ? (currentYearOverdueCount / currentYearInvoiceCount) * 100
+      : null,
+    previousYearOverdueCount,
+    previousYearInvoiceCount,
+    previousYearOverduePercent: previousYearInvoiceCount > 0
+      ? (previousYearOverdueCount / previousYearInvoiceCount) * 100
+      : null,
   };
 }
 

@@ -63,7 +63,11 @@
                       :class="{ 'card-item-wide': card.emphasis === 'wide' }"
                     >
                       <span class="card-label">{{ card.title }}</span>
-                      <div v-if="card.table?.rows?.length" class="card-table">
+                      <div
+                        v-if="card.table?.rows?.length"
+                        class="card-table"
+                        :class="`card-table-${card.table.variant || 'default'}`"
+                      >
                         <div class="card-table-header">
                           <span
                             v-for="column in card.table.columns"
@@ -758,6 +762,11 @@ h1 {
   grid-template-columns: minmax(54px, 0.7fr) minmax(82px, 0.95fr) minmax(92px, 0.95fr) minmax(116px, 1.2fr);
   gap: 8px;
   align-items: center;
+}
+
+.card-table-metrics .card-table-header,
+.card-table-metrics .card-table-row {
+  grid-template-columns: minmax(220px, 1fr) minmax(120px, auto);
 }
 
 .card-table-header {
