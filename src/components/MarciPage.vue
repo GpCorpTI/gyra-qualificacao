@@ -35,7 +35,7 @@
                       class="copy-button"
                       @click="copyAssistantMessage(message)"
                     >
-                      {{ copiedMessageId === message.id ? 'Copiado' : 'Copiar' }}
+                      {{ copyButtonLabel(message.id) }}
                     </button>
                   </div>
 
@@ -179,6 +179,37 @@ function createId(prefix = 'msg') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function formatCopyValue(value) {
+  if (value === null || value === undefined || value === '') return '';
+  return String(value);
+}
+
+async function writeTextToClipboard(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error('Clipboard copy failed');
+  }
+}
+
 export default {
   name: 'MarciPage',
   data() {
@@ -186,11 +217,12 @@ export default {
       draft: '',
       loading: false,
       copiedMessageId: '',
+      copyFailedMessageId: '',
       messages: [
         {
           id: createId('assistant'),
           role: 'assistant',
-          text: 'Ola, eu sou o MARCI. Posso consultar o Gyra por CNPJ e tambem explicar rapidamente como eu funciono.',
+          text: 'Ola, eu sou o MARCI. Envie um CNPJ para eu combinar as informacoes disponiveis de GYRA+ e SAP em uma leitura de credito.',
           sources: [],
           cards: [],
           suggestions: [],
@@ -243,6 +275,11 @@ export default {
         text: message.text,
       }));
     },
+    copyButtonLabel(messageId) {
+      if (this.copiedMessageId === messageId) return 'Copiado';
+      if (this.copyFailedMessageId === messageId) return 'Erro ao copiar';
+      return 'Copiar';
+    },
     buildCopyText(message) {
       const lines = [message.text || ''];
 
@@ -252,9 +289,10 @@ export default {
           const tableRows = card.table?.rows?.length
             ? card.table.rows
                 .map((row) => (card.table.columns || [])
-                  .map((column) => row?.[column.key])
-                  .filter(Boolean)
+                  .map((column) => formatCopyValue(row?.[column.key]))
+                  .filter((value) => value !== '')
                   .join(' | '))
+                .filter(Boolean)
                 .join('\n')
             : '';
           const inlineItems = Array.isArray(card.items)
@@ -277,15 +315,22 @@ export default {
     },
     async copyAssistantMessage(message) {
       try {
-        await navigator.clipboard.writeText(this.buildCopyText(message));
+        await writeTextToClipboard(this.buildCopyText(message));
         this.copiedMessageId = message.id;
+        this.copyFailedMessageId = '';
         window.setTimeout(() => {
           if (this.copiedMessageId === message.id) {
             this.copiedMessageId = '';
           }
         }, 1800);
       } catch (err) {
-        this.pushAssistantError('Nao consegui copiar a resposta automaticamente nesta sessao.');
+        console.warn('Falha ao copiar resposta do MARCI', err);
+        this.copyFailedMessageId = message.id;
+        window.setTimeout(() => {
+          if (this.copyFailedMessageId === message.id) {
+            this.copyFailedMessageId = '';
+          }
+        }, 2200);
       }
     },
     pushAssistantError(errorMessage) {
