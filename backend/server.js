@@ -626,11 +626,12 @@ function buildMarciGyraPendingMessage(summary) {
 
 function buildMarciGyraClaudeSystemPrompt() {
   return [
-    'Voce e MARCI, um assistente analitico de credito focado exclusivamente em interpretar retornos reais do GYRA+.',
+    'Voce e MARCI, um assistente analitico de credito focado exclusivamente em interpretar retornos reais do GYRA+ e dados financeiros do SAP quando forem fornecidos.',
     'Sua tarefa nao e apenas resumir: voce deve diagnosticar a situacao de credito, interpretar sinais, cruzar evidencias internas do relatorio e apontar oportunidades comerciais ou operacionais quando os dados sustentarem essa leitura.',
-    'Analise o payload completo do GYRA+ fornecido pelo backend e responda em portugues do Brasil.',
-    'Considere o conjunto completo das informacoes disponiveis, incluindo status, score, risco, regras da politica, alertas, restricoes, faturamento, limite recomendado, coerencia entre dados, inconsistencias e quaisquer sinais relevantes para analise de credito.',
-    'Sua analise deve priorizar o que realmente importa para decisao de credito: capacidade de pagamento, estabilidade cadastral, risco, alertas de politica, proporcionalidade entre faturamento e limite, pontos de cautela, sinais positivos, socios atuais e qualquer indicio de oportunidade.',
+    'Analise o payload completo do GYRA+ e o contexto SAP fornecidos pelo backend, tratando os dois como partes da mesma leitura de credito. Responda em portugues do Brasil.',
+    'Considere o conjunto completo das informacoes disponiveis, incluindo status, score, risco, regras da politica, alertas, restricoes, faturamento, limite recomendado, socios atuais, titulos em aberto, indicadores SAP, atraso, vencimentos e coerencia entre as fontes.',
+    'Sua analise deve priorizar o que realmente importa para decisao de credito: capacidade de pagamento, comportamento financeiro, estabilidade cadastral, risco, alertas de politica, proporcionalidade entre faturamento e limite, pontos de cautela, sinais positivos e qualquer indicio de oportunidade.',
+    'Cruze GYRA+ e SAP quando ambos estiverem presentes. Se as fontes apontarem na mesma direcao, diga isso. Se houver conflito, por exemplo boa leitura no GYRA+ mas atraso no SAP, destaque a divergencia e o impacto pratico.',
     'Traga insights praticos: explique o que o dado sugere, por que importa para credito e qual acao comercial ou analitica pode fazer sentido.',
     'Quando houver oportunidade, diferencie oportunidade de credito, oportunidade comercial e oportunidade de acompanhamento. Exemplo: limite conservador frente ao faturamento, cliente com boa leitura mas dados incompletos, necessidade de atualizar cadastro, ou potencial para revisao controlada de limite.',
     'Quando houver risco, seja especifico sobre o motivo: regra acionada, score fraco, restricao, incoerencia, ausencia de dados, limite desproporcional, faturamento incerto ou outro sinal presente no relatorio.',
@@ -640,7 +641,7 @@ function buildMarciGyraClaudeSystemPrompt() {
     'Escreva uma resposta analitica, clara e profissional, como se estivesse apoiando um analista de credito ou comercial a tomar a proxima decisao.',
     'Retorne somente JSON valido, sem markdown, sem comentarios e sem texto fora do JSON.',
     'O JSON deve seguir exatamente esta forma: {"answer":"texto","highlights":["item1"],"warnings":["item1"],"suggestions":["item1","item2"]}.',
-    'No campo answer, entregue uma analise de credito com insights e oportunidades, nao um resumo simples. Use entre 180 e 320 palavras quando houver dados suficientes.',
+    'No campo answer, entregue uma analise de credito integrada com insights e oportunidades, nao um resumo simples nem uma resposta separada por sistemas. Use entre 180 e 320 palavras quando houver dados suficientes.',
     'Em highlights, liste os principais achados e oportunidades sustentadas pelos dados.',
     'Em warnings, liste pontos de cautela ou lacunas relevantes para decisao.',
     'Em suggestions, proponha proximas perguntas uteis ao MARCI, curtas e acionaveis.',
@@ -662,7 +663,7 @@ function buildGyraClaudeContext(summary, fullReport) {
   };
 }
 
-async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport }) {
+async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport, sapContext = null }) {
   const apiKey = getAnthropicApiKey();
   if (!apiKey) return null;
 
@@ -680,9 +681,10 @@ async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport }) {
               type: 'text',
               text: JSON.stringify({
                 userRequest: userMessage,
-                source: 'GYRA',
+                source: sapContext ? 'GYRA+SAP' : 'GYRA',
                 gyraDerivedContext: derivedContext,
                 gyraFullReport: fullReport,
+                sapContext,
               }),
             },
           ],
@@ -730,11 +732,11 @@ async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport }) {
   };
 }
 
-function buildMarciGyraClaudeMessage(summary, analysis) {
-  const cards = [...buildMarciGyraBaseCards(summary)];
+function appendClaudeAnalysisCards(cards, analysis) {
+  const nextCards = [...cards];
 
   if (analysis.highlights?.length) {
-    cards.push(
+    nextCards.push(
       buildMarciCard(
         'Leitura executiva',
         analysis.highlights[0],
@@ -744,7 +746,7 @@ function buildMarciGyraClaudeMessage(summary, analysis) {
   }
 
   if (analysis.warnings?.length) {
-    cards.push(
+    nextCards.push(
       buildMarciCard(
         'Pontos de atencao',
         analysis.warnings[0],
@@ -752,6 +754,12 @@ function buildMarciGyraClaudeMessage(summary, analysis) {
       )
     );
   }
+
+  return nextCards;
+}
+
+function buildMarciGyraClaudeMessage(summary, analysis) {
+  const cards = appendClaudeAnalysisCards(buildMarciGyraBaseCards(summary), analysis);
 
   return buildMarciMessage({
     intent: 'gyra_summary',
@@ -778,6 +786,136 @@ function buildMarciGyraClaudeMessage(summary, analysis) {
   });
 }
 
+function uniqueSources(sources = []) {
+  return [...new Set(sources.filter(Boolean))];
+}
+
+function buildSapUnavailableMessage(cnpj, err) {
+  const formatted = formatCNPJMask(normalizeCNPJNumeric(cnpj)) || cnpj;
+
+  return buildMarciMessage({
+    intent: 'sap_overview',
+    answer: `Nao consegui consultar os dados SAP para o CNPJ ${formatted} nesta tentativa.`,
+    sources: ['SAP HANA'],
+    cards: [
+      buildMarciCard('Cliente SAP', formatted, 'Consulta SAP indisponivel nesta tentativa.'),
+      buildMarciCard('SAP', 'Indisponivel', err?.message || 'Erro ao consultar dados SAP.'),
+    ],
+    metadata: { cnpj: formatted, cardCode: null },
+  });
+}
+
+function buildMarciCombinedDeterministicMessage(summary, sapMessage, options = {}) {
+  const gyraCards = buildMarciGyraBaseCards(summary);
+  const sapCards = sapMessage?.cards || [];
+  const isPending = String(summary.status || '').toUpperCase() === 'PENDING';
+
+  return buildMarciMessage({
+    intent: 'credit_overview',
+    answer: isPending
+      ? `O relatorio do GYRA+ ainda esta em analise para ${summary.companyName}. Mesmo assim, ja trouxe os dados objetivos disponiveis do SAP para apoiar a leitura inicial.`
+      : [
+          `A leitura combinada considera o GYRA+ e os dados SAP disponiveis para ${summary.companyName}.`,
+          `No GYRA+, o status esta como ${summary.status}, com risco ${summary.risk}, limite recomendado de ${summary.limiteRecomendado} e relacao faturamento x credito em ${summary.faturamentoXCredito}.`,
+          sapMessage?.answer || 'A consulta SAP nao retornou uma leitura textual nesta tentativa.',
+        ].join(' '),
+    sources: uniqueSources(['GYRA', ...(sapMessage?.sources || [])]),
+    cards: [...gyraCards, ...sapCards],
+    suggestions: [
+      `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
+      `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
+    ],
+    metadata: {
+      cnpj: summary.cnpj,
+      reportId: summary.reportId,
+      reused: summary.reused,
+      createdAt: summary.createdAt,
+      cardCode: sapMessage?.metadata?.cardCode || null,
+      analysisMode: options.analysisMode || 'deterministic_combined',
+    },
+  });
+}
+
+async function buildMarciCombinedCreditResponse({ cnpj, policyId, userMessage }) {
+  const { summary, fullReport } = await getMarciGyraSummaryData({ cnpj, policyId, includeFullReport: true });
+
+  let sapMessage;
+  try {
+    sapMessage = await buildMarciSapOverviewResponse({ cnpj: summary.normalizedCnpj || cnpj });
+  } catch (err) {
+    logger.warn({ err: err.message, cnpj: summary.cnpj }, 'marci.sap.combined.fallback');
+    sapMessage = buildSapUnavailableMessage(summary.cnpj || cnpj, err);
+  }
+
+  const deterministic = buildMarciCombinedDeterministicMessage(summary, sapMessage);
+
+  if (String(summary.status || '').toUpperCase() === 'PENDING') {
+    return {
+      ...deterministic,
+      metadata: {
+        ...deterministic.metadata,
+        analysisMode: 'pending_combined',
+      },
+    };
+  }
+
+  if (!getAnthropicApiKey()) {
+    return deterministic;
+  }
+
+  try {
+    const analysis = await requestClaudeGyraAnalysis({
+      userMessage: userMessage || `Analise credito combinando GYRA+ e SAP do CNPJ ${summary.cnpj}`,
+      summary,
+      fullReport,
+      sapContext: {
+        answer: sapMessage.answer,
+        sources: sapMessage.sources,
+        cards: sapMessage.cards,
+        metadata: sapMessage.metadata,
+      },
+    });
+    const cards = appendClaudeAnalysisCards(
+      [...buildMarciGyraBaseCards(summary), ...(sapMessage.cards || [])],
+      analysis
+    );
+
+    return buildMarciMessage({
+      intent: 'credit_overview',
+      answer: analysis.answer,
+      sources: uniqueSources(['GYRA', ...(sapMessage.sources || []), 'Claude']),
+      cards,
+      suggestions: analysis.suggestions?.length
+        ? analysis.suggestions
+        : [
+            `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
+            `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
+          ],
+      metadata: {
+        cnpj: summary.cnpj,
+        reportId: summary.reportId,
+        reused: summary.reused,
+        createdAt: summary.createdAt,
+        cardCode: sapMessage?.metadata?.cardCode || null,
+        analysisMode: 'claude_combined',
+        model: analysis.model,
+        inputTokens: analysis.usage?.input_tokens ?? null,
+        outputTokens: analysis.usage?.output_tokens ?? null,
+        totalTokens: extractAnthropicUsageTotals(analysis.usage).totalTokens,
+      },
+    });
+  } catch (err) {
+    logger.warn({ err: err.message, cnpj: summary.cnpj }, 'marci.claude.combined.fallback');
+    return {
+      ...deterministic,
+      metadata: {
+        ...deterministic.metadata,
+        analysisMode: 'deterministic_combined_fallback',
+      },
+    };
+  }
+}
+
 function detectMarciIntent(message = '') {
   const normalizedText = normalizeIntentText(message);
   const cnpj = extractCNPJFromText(message);
@@ -791,16 +929,12 @@ function detectMarciIntent(message = '') {
   const talksAboutSap =
     /\b(sap|cardcode|historico|pagamento|pagamentos|a vencer|vencido|vencidas|nota|notas|faturada|faturadas|grupo|grupos)\b/.test(normalizedText);
 
+  if (cnpj) {
+    return { intent: 'credit_overview', cnpj };
+  }
+
   if (asksForHelp) {
     return { intent: 'help', cnpj };
-  }
-
-  if (cnpj && talksAboutSap) {
-    return { intent: 'sap_overview', cnpj };
-  }
-
-  if (cnpj && (talksAboutGyra || !talksAboutSap)) {
-    return { intent: 'gyra_summary', cnpj };
   }
 
   if (talksAboutSap) {
@@ -1050,15 +1184,15 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
 function buildMarciHelpResponse() {
   return buildMarciMessage({
     intent: 'help',
-    answer: 'Eu sou o MARCI, um assistente de analise de credito. Meu papel e consolidar leituras de risco e credito a partir de fontes como GYRA+ e, na evolucao do fluxo, tambem SAP, para transformar os dados em uma leitura mais clara para o time.',
+    answer: 'Eu sou o MARCI, um assistente de analise de credito. Quando voce envia um CNPJ, eu busco os dados disponiveis no GYRA+ e no SAP e transformo tudo em uma leitura unica para apoiar a decisao.',
     sources: [],
     cards: [
-      buildMarciCard('Funcao principal', 'Analise de credito', 'Organizo os dados para entregar uma leitura mais objetiva de risco, limite e contexto do cliente.'),
-      buildMarciCard('Fontes de dados', 'GYRA+ e SAP', 'O objetivo do MARCI e combinar informacoes de bureaus e operacao para apoiar a decisao de credito.'),
+      buildMarciCard('Funcao principal', 'Analise de credito', 'Organizo dados externos e historico operacional para entregar uma leitura mais objetiva de risco, limite e contexto do cliente.'),
+      buildMarciCard('Fontes de dados', 'GYRA+ e SAP', 'Combino informacoes de bureau, politica de credito, socios, titulos em aberto e indicadores financeiros quando disponiveis.'),
     ],
     suggestions: [
       'Como o MARCI funciona?',
-      'Consultar Gyra do CNPJ 12.345.678/0001-99',
+      'Analisar credito do CNPJ 12.345.678/0001-99',
     ],
   });
 }
@@ -1073,7 +1207,7 @@ function buildMarciMissingCNPJResponse(intent) {
     answer,
     sources: [],
     suggestions: [
-      'Consultar Gyra do CNPJ 12.345.678/0001-99',
+      'Analisar credito do CNPJ 12.345.678/0001-99',
       'Como o MARCI funciona?',
     ],
   });
@@ -1082,14 +1216,14 @@ function buildMarciMissingCNPJResponse(intent) {
 function buildMarciUnknownResponse() {
   return buildMarciMessage({
     intent: 'unknown',
-    answer: 'Ainda estou restrito ao fluxo de analise de credito. Posso consultar o Gyra por CNPJ e tambem explicar de forma simples como o MARCI organiza informacoes de credito.',
+    answer: 'Ainda estou restrito ao fluxo de analise de credito. Envie um CNPJ para eu combinar os dados disponiveis do GYRA+ e do SAP em uma leitura unica.',
     sources: [],
     cards: [
-      buildMarciCard('Escopo do MARCI', 'Analise de credito', 'Leitura orientada por dados de GYRA+ e, na evolucao do fluxo, tambem SAP.'),
+      buildMarciCard('Escopo do MARCI', 'Analise de credito', 'Leitura orientada por dados de GYRA+, SAP e regras internas disponiveis.'),
     ],
     suggestions: [
       'Como o MARCI funciona?',
-      'Consultar Gyra do CNPJ 12.345.678/0001-99',
+      'Analisar credito do CNPJ 12.345.678/0001-99',
     ],
   });
 }
@@ -1105,6 +1239,8 @@ async function executeMarciIntent({ intent, cnpj, policyId, userMessage }) {
       return buildMarciGyraChatResponse({ cnpj, policyId, userMessage });
     case 'sap_overview':
       return buildMarciSapOverviewResponse({ cnpj });
+    case 'credit_overview':
+      return buildMarciCombinedCreditResponse({ cnpj, policyId, userMessage });
     default:
       return buildMarciUnknownResponse();
   }
@@ -1157,7 +1293,7 @@ async function sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate) {
 async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null }) {
   const isApproved = String(statusFromReport || '').toUpperCase() === 'APPROVED';
   if (!isApproved) {
-    return { status: 'skipped', reason: 'NOT_APPROVED', cardCode: null };
+    return { status: 'skipped', reason: 'NOT_APPROVED', cardCode: null, dateSet: null };
   }
 
   let resolvedCnpj = String(cnpjForLookup || '').trim();
@@ -1172,13 +1308,13 @@ async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLoo
 
   if (!resolvedCnpj) {
     console.warn('Approved but no CNPJ in DB; skipping SAP update');
-    return { status: 'skipped', reason: 'NO_CNPJ_IN_DB', cardCode: null };
+    return { status: 'skipped', reason: 'NO_CNPJ_IN_DB', cardCode: null, dateSet: null };
   }
 
   const cardCode = await getCardCodeByCNPJ_HANA(resolvedCnpj);
   if (!cardCode) {
     console.warn('CNPJ not found in CRD7.TaxId0; skipping', resolvedCnpj);
-    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null };
+    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, dateSet: null };
   }
 
   const sap = await sapCreateSession();
@@ -1186,7 +1322,7 @@ async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLoo
   await sapUpdateUltimaAnaliseCredito(sap, cardCode, todayStr);
 
   console.log(`✅ SAP updated U_dtUltimaAnaliseCredito for ${cardCode} (${resolvedCnpj})`);
-  return { status: 'success', reason: null, cardCode };
+  return { status: 'success', reason: null, cardCode, dateSet: todayStr };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1751,6 +1887,60 @@ app.get('/api/report/:id', async (req, res) => {
     req.log.error({ err: err.message, reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch.fail');
     console.error('❌ /api/report/:id:', err.response?.data || err.message || err);
     res.status(500).json({ error: err.message || 'Internal error' });
+  }
+});
+
+app.post('/api/report/:id/update-sap-manual', async (req, res) => {
+  const reportId = req.params.id;
+
+  try {
+    const rows = await execRows(
+      `SELECT cnpj, business_name, status_value
+       FROM cnpj_reports
+       WHERE report_id = ?
+       LIMIT 1`,
+      [reportId]
+    );
+
+    const reportRow = rows?.[0];
+    if (!reportRow) {
+      return res.status(404).json({
+        status: 'skipped',
+        reason: 'REPORT_NOT_FOUND',
+        message: 'Nao encontrei a ultima consulta para atualizar o SAP manualmente.',
+      });
+    }
+
+    const sapUpdate = await maybeUpdateSapUltimaAnaliseCredito({
+      statusFromReport: reportRow.status_value,
+      cnpjForLookup: reportRow.cnpj,
+      reportId,
+    });
+
+    if (sapUpdate.status === 'success') {
+      return res.json({
+        ...sapUpdate,
+        reportId,
+        companyName: reportRow.business_name || null,
+        message: 'SAP atualizado manualmente com sucesso.',
+      });
+    }
+
+    return res.json({
+      ...sapUpdate,
+      reportId,
+      companyName: reportRow.business_name || null,
+      message: sapUpdate.reason === 'NOT_APPROVED'
+        ? 'O cliente da ultima consulta ainda nao esta aprovado no motor.'
+        : 'Nao foi possivel atualizar o SAP com os dados da ultima consulta.',
+    });
+  } catch (err) {
+    req.log?.error?.({ err: err.message, reportId }, 'report.sap.manual.fail');
+    return res.status(500).json({
+      status: 'skipped',
+      reason: 'SAP_UPDATE_ERROR',
+      message: err.message || 'Erro interno ao atualizar o SAP manualmente.',
+    });
   }
 });
 

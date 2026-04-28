@@ -36,6 +36,15 @@
         </button>
 
         <button
+          v-if="report"
+          class="btn-sap"
+          @click="handleAtualizarSapManual"
+          :disabled="loadingSapManual || !lastReportId"
+        >
+          {{ loadingSapManual ? "Atualizando SAP..." : "Atualizar SAP manualmente" }}
+        </button>
+
+        <button
           class="btn-pdf"
           @click="handleGerarPdf"
           :disabled="!report || loadingPdf"
@@ -76,7 +85,7 @@
 </template>
 
 <script>
-import { getToken, createReport, getReportById } from '@/services/gyraApi';
+import { getToken, createReport, getReportById, updateReportSapManual } from '@/services/gyraApi';
 import {
   extractReportData,
   translateStatus,
@@ -92,8 +101,10 @@ export default {
       cnpj: '',
       loading: false,
       loadingPdf: false,
+      loadingSapManual: false,
       error: '',
       report: null,
+      lastReportId: '',
       companyName: '',
       mainStatus: '',
       riskInfo: [],
@@ -153,6 +164,46 @@ export default {
       else    this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
     },
 
+    _buildSapManualMessage(result = {}) {
+      if (result.status === 'success') {
+        return result.message || 'SAP atualizado com sucesso ✅';
+      }
+
+      switch (result.reason) {
+        case 'NOT_APPROVED':
+          return 'O SAP manual só pode ser atualizado quando o cliente estiver aprovado no motor.';
+        case 'NO_CNPJ_IN_DB':
+          return 'Não encontrei o CNPJ dessa consulta na base local para atualizar o SAP.';
+        case 'BP_NOT_FOUND_FOR_CNPJ':
+          return 'Não encontrei este cliente no SAP a partir do CNPJ da última consulta.';
+        case 'SAP_UPDATE_ERROR':
+          return result.message || 'Ocorreu um erro ao atualizar o SAP manualmente.';
+        default:
+          return result.message || 'Não foi possível atualizar o SAP com os dados da última consulta.';
+      }
+    },
+
+    async handleAtualizarSapManual() {
+      if (!this.lastReportId) return;
+
+      this.loadingSapManual = true;
+      try {
+        const result = await updateReportSapManual({ reportId: this.lastReportId });
+        const message = this._buildSapManualMessage(result);
+        const kind = result.status === 'success' ? 'ok' : 'error';
+        this._showToast(message, kind, 3200);
+      } catch (err) {
+        console.error('❌ QualificarCliente.handleAtualizarSapManual:', err);
+        this._showToast(
+          err.response?.data?.message || err.response?.data?.error || err.message || 'Erro ao atualizar o SAP manualmente.',
+          'error',
+          3500
+        );
+      } finally {
+        this.loadingSapManual = false;
+      }
+    },
+
     // ── gerar PDF ────────────────────────────────────────────────────────────
     async handleGerarPdf() {
       if (!this.report) return;
@@ -201,6 +252,7 @@ export default {
       this.loading = true;
       this.error   = '';
       this.report  = null;
+      this.lastReportId = '';
       this.companyName = '';
 
       try {
@@ -213,9 +265,11 @@ export default {
           sector: 'CRDT',
         });
         const reportId = created.reportId || created.id;
+        this.lastReportId = reportId;
 
         const fullReport = await getReportById({ token, reportId });
         this.report      = fullReport;
+        this.lastReportId = fullReport?.id || reportId;
         this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
         const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
@@ -245,6 +299,7 @@ export default {
 }
 
 .btn-copy,
+.btn-sap,
 .btn-pdf {
   padding: 8px 12px;
   border: none;
@@ -264,7 +319,13 @@ export default {
   color: #fff;
 }
 
+.btn-sap {
+  background: #d97706;
+  color: #fff;
+}
+
 .btn-copy:disabled,
+.btn-sap:disabled,
 .btn-pdf:disabled {
   opacity: 0.55;
   cursor: not-allowed;

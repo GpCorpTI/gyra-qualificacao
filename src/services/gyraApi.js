@@ -38,6 +38,12 @@ export async function getReportById({ token, reportId }) {
   });
   return data;
 }
+
+export async function updateReportSapManual({ reportId }) {
+  const { data } = await api.post(`/report/${reportId}/update-sap-manual`);
+  return data;
+}
+
 export async function listReports() {
   const { data } = await api.get('/reports');
   return data;
