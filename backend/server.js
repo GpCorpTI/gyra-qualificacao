@@ -1115,7 +1115,7 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
         'Indicadores SAP',
         procedureRows.length ? 'Leitura do retorno atual' : 'Sem base para indicadores',
         procedureRows.length
-          ? 'Valor mensal soma os saldos com vencimento no mes atual. Percentual em atraso considera a quantidade de notas atrasadas.'
+          ? 'Valor anual soma os saldos com vencimento no ano atual. Percentual em atraso considera a quantidade de notas atrasadas.'
           : 'Os indicadores dependem de linhas retornadas pela procedure.',
         {
           table: {
@@ -1126,10 +1126,10 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
             ],
             rows: [
               {
-                id: 'valor-pago-mes',
-                indicador: 'Valor total pago no mes',
+                id: 'valor-pago-ano',
+                indicador: 'Valor total pago no ano',
                 valor: procedureRows.length
-                  ? formatSapProcedureCurrency(procedureSummary.currentMonthBalance)
+                  ? formatSapProcedureCurrency(procedureSummary.currentYearBalance)
                   : '-',
               },
               {
@@ -1534,13 +1534,12 @@ function formatSapMetricPercent(value) {
 
 function summarizeSapProcedureRows(rows = []) {
   const today = new Date();
-  const currentMonth = today.getMonth();
   const currentYear = today.getFullYear();
   const previousYear = currentYear - 1;
 
   if (!Array.isArray(rows) || !rows.length) {
     return {
-      currentMonthBalance: 0,
+      currentYearBalance: 0,
       currentYearOverdueCount: 0,
       currentYearInvoiceCount: 0,
       currentYearOverduePercent: null,
@@ -1550,7 +1549,7 @@ function summarizeSapProcedureRows(rows = []) {
     };
   }
 
-  let currentMonthBalance = 0;
+  let currentYearBalance = 0;
   let currentYearOverdueCount = 0;
   let currentYearInvoiceCount = 0;
   let previousYearOverdueCount = 0;
@@ -1567,20 +1566,13 @@ function summarizeSapProcedureRows(rows = []) {
       findRowValueByHints(row, ['vencimento', 'duedate', 'dataven', 'venc', 'due'])
     );
 
-    if (
-      vencimento &&
-      vencimento.getMonth() === currentMonth &&
-      vencimento.getFullYear() === currentYear
-    ) {
-      currentMonthBalance += saldo;
-    }
-
     if (!vencimento) return;
 
     const dueYear = vencimento.getFullYear();
     const isOverdue = diferenca != null && diferenca > 0;
 
     if (dueYear === currentYear) {
+      currentYearBalance += saldo;
       currentYearInvoiceCount += 1;
       if (isOverdue) currentYearOverdueCount += 1;
     }
@@ -1592,7 +1584,7 @@ function summarizeSapProcedureRows(rows = []) {
   });
 
   return {
-    currentMonthBalance,
+    currentYearBalance,
     currentYearOverdueCount,
     currentYearInvoiceCount,
     currentYearOverduePercent: currentYearInvoiceCount > 0
