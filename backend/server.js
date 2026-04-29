@@ -1290,9 +1290,9 @@ async function sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate) {
   }
 }
 
-async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null }) {
+async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null, force = false }) {
   const isApproved = String(statusFromReport || '').toUpperCase() === 'APPROVED';
-  if (!isApproved) {
+  if (!force && !isApproved) {
     return { status: 'skipped', reason: 'NOT_APPROVED', cardCode: null, dateSet: null };
   }
 
@@ -1907,6 +1907,7 @@ app.post('/api/report/:id/update-sap-manual', async (req, res) => {
       statusFromReport: reportRow.status_value,
       cnpjForLookup: reportRow.cnpj,
       reportId,
+      force: true,
     });
 
     if (sapUpdate.status === 'success') {
