@@ -464,7 +464,14 @@ function extractCNPJFromText(input = '') {
 }
 
 function buildMarciCard(title, value, note = '', extra = {}) {
-  return { title, value, note, ...extra };
+  return {
+    title,
+    value,
+    note,
+    category: extra.category || 'Geral',
+    tone: extra.tone || 'default',
+    ...extra,
+  };
 }
 
 function buildMarciMessage({
@@ -543,22 +550,26 @@ function buildMarciGyraBaseCards(summary) {
     buildMarciCard(
       'Releitura do cliente',
       summary.releituraCliente,
-      summary.reused ? 'Consulta reaproveitada dentro de 45 dias.' : 'Novo relatorio gerado nesta consulta.'
+      summary.reused ? 'Consulta reaproveitada dentro de 45 dias.' : 'Novo relatorio gerado nesta consulta.',
+      { category: 'GYRA+' }
     ),
     buildMarciCard(
       'Faturamento x credito (GYRA)',
       summary.faturamentoXCredito,
-      `Percentual: ${summary.percentualCreditoSobreFaturamento}`
+      `Percentual: ${summary.percentualCreditoSobreFaturamento}`,
+      { category: 'GYRA+' }
     ),
     buildMarciCard(
       'Faturamento presumido',
       summary.faturamentoPresumido,
-      `Faixa: ${summary.faixaFaturamento}`
+      `Faixa: ${summary.faixaFaturamento}`,
+      { category: 'GYRA+' }
     ),
     buildMarciCard(
       'Limite recomendado',
       summary.limiteRecomendado,
-      `Score Serasa: ${summary.scoreSerasa}`
+      `Score Serasa: ${summary.scoreSerasa}`,
+      { category: 'GYRA+' }
     ),
     buildMarciCard(
       'Socios atuais',
@@ -567,6 +578,7 @@ function buildMarciGyraBaseCards(summary) {
         ? ''
         : 'Sem socios atuais identificados no retorno do Gyra.',
       {
+        category: 'GYRA+',
         items: (summary.sociosAtuais || []).map((owner) => ({
           name: owner.nome,
           document: owner.documento || '',
@@ -576,6 +588,39 @@ function buildMarciGyraBaseCards(summary) {
   ];
 
   return cards;
+}
+
+function buildMarciGyraPendingCards(summary) {
+  return [
+    buildMarciCard(
+      'GYRA+ em processamento',
+      'Aguardando conclusao',
+      'O relatorio foi localizado ou criado, mas ainda nao terminou de processar no GYRA+.',
+      {
+        category: 'Status',
+        tone: 'pending',
+        emphasis: 'wide',
+      }
+    ),
+    buildMarciCard(
+      'Consulta registrada',
+      summary.companyName || 'Empresa em identificacao',
+      `CNPJ: ${summary.cnpj || 'Nao identificado'}${summary.reportId ? ` | Relatorio: ${summary.reportId}` : ''}`,
+      {
+        category: 'GYRA+',
+        tone: 'info',
+      }
+    ),
+    buildMarciCard(
+      'Proxima acao',
+      'Verificar novamente',
+      'Use a sugestao abaixo em alguns instantes. A regra de 45 dias reaproveita o mesmo relatorio quando ele ficar pronto.',
+      {
+        category: 'Acao',
+        tone: 'info',
+      }
+    ),
+  ];
 }
 
 function buildMarciGyraDeterministicMessage(summary) {
@@ -605,14 +650,11 @@ function buildMarciGyraDeterministicMessage(summary) {
 function buildMarciGyraPendingMessage(summary) {
   return buildMarciMessage({
     intent: 'gyra_summary',
-    answer: 'O relatorio ainda esta em analise pelo Gyra. Tente novamente daqui a pouco para obter a leitura completa.',
+    answer: 'O GYRA+ ainda esta processando este relatorio. Eu ja deixei a consulta organizada abaixo; em alguns instantes, envie a verificacao novamente para buscar a leitura completa.',
     sources: ['GYRA'],
-    cards: [
-      buildMarciCard('Status do relatorio', summary.status || 'PENDING'),
-      buildMarciCard('Empresa', summary.companyName || 'Nao identificada', `CNPJ: ${summary.cnpj || 'Nao identificado'}`),
-    ],
+    cards: buildMarciGyraPendingCards(summary),
     suggestions: [
-      `Consultar novamente o CNPJ ${summary.cnpj}`,
+      `Verificar novamente o CNPJ ${summary.cnpj}`,
     ],
     metadata: {
       cnpj: summary.cnpj,
@@ -742,7 +784,8 @@ function appendClaudeAnalysisCards(cards, analysis) {
       buildMarciCard(
         'Leitura executiva',
         analysis.highlights[0],
-        analysis.highlights.slice(1).join(' | ')
+        analysis.highlights.slice(1).join(' | '),
+        { category: 'Analise', tone: 'insight', emphasis: 'wide' }
       )
     );
   }
@@ -752,7 +795,8 @@ function appendClaudeAnalysisCards(cards, analysis) {
       buildMarciCard(
         'Pontos de atencao',
         analysis.warnings[0],
-        analysis.warnings.slice(1).join(' | ')
+        analysis.warnings.slice(1).join(' | '),
+        { category: 'Analise', tone: 'warning', emphasis: 'wide' }
       )
     );
   }
@@ -800,17 +844,23 @@ function buildSapUnavailableMessage(cnpj, err) {
     answer: `Nao consegui consultar os dados SAP para o CNPJ ${formatted} nesta tentativa.`,
     sources: ['SAP HANA'],
     cards: [
-      buildMarciCard('Cliente SAP', formatted, 'Consulta SAP indisponivel nesta tentativa.'),
-      buildMarciCard('SAP', 'Indisponivel', err?.message || 'Erro ao consultar dados SAP.'),
+      buildMarciCard('Cliente SAP', formatted, 'Consulta SAP indisponivel nesta tentativa.', {
+        category: 'SAP',
+        tone: 'warning',
+      }),
+      buildMarciCard('SAP', 'Indisponivel', err?.message || 'Erro ao consultar dados SAP.', {
+        category: 'SAP',
+        tone: 'warning',
+      }),
     ],
     metadata: { cnpj: formatted, cardCode: null },
   });
 }
 
 function buildMarciCombinedDeterministicMessage(summary, sapMessage, options = {}) {
-  const gyraCards = buildMarciGyraBaseCards(summary);
-  const sapCards = sapMessage?.cards || [];
   const isPending = String(summary.status || '').toUpperCase() === 'PENDING';
+  const gyraCards = isPending ? buildMarciGyraPendingCards(summary) : buildMarciGyraBaseCards(summary);
+  const sapCards = sapMessage?.cards || [];
 
   return buildMarciMessage({
     intent: 'credit_overview',
@@ -823,10 +873,15 @@ function buildMarciCombinedDeterministicMessage(summary, sapMessage, options = {
         ].join(' '),
     sources: uniqueSources(['GYRA', ...(sapMessage?.sources || [])]),
     cards: [...gyraCards, ...sapCards],
-    suggestions: [
-      `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
-      `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
-    ],
+    suggestions: isPending
+      ? [
+          `Verificar novamente o CNPJ ${summary.cnpj}`,
+          `Como funciona o processamento do GYRA+?`,
+        ]
+      : [
+          `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
+          `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
+        ],
     metadata: {
       cnpj: summary.cnpj,
       reportId: summary.reportId,
@@ -1014,11 +1069,15 @@ async function getMarciGyraSummaryData({ cnpj, policyId, includeFullReport = fal
     summary.sapUpdateStatus = sapUpdate.status;
     summary.sapUpdateReason = sapUpdate.reason;
     summary.sapUpdateCardCode = sapUpdate.cardCode;
+    summary.sapUpdateCardCodes = sapUpdate.cardCodes || [];
+    summary.sapUpdateUpdatedCount = sapUpdate.updatedCount || 0;
   } catch (err) {
     logger.warn({ err: err.message, cnpj: summary.cnpj, reportId }, 'marci.sap.update.failed');
     summary.sapUpdateStatus = 'skipped';
     summary.sapUpdateReason = 'SAP_UPDATE_ERROR';
     summary.sapUpdateCardCode = null;
+    summary.sapUpdateCardCodes = [];
+    summary.sapUpdateUpdatedCount = 0;
   }
 
   if (includeFullReport) {
@@ -1076,11 +1135,17 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
       answer: `Nao encontrei um CardCode no SAP para o CNPJ ${formatted}. O fluxo do MARCI esta pronto para usar esse pivô, mas este cliente ainda nao foi resolvido na base atual.`,
       sources: ['SAP HANA'],
       cards: [
-        buildMarciCard('CNPJ consultado', formatted),
-        buildMarciCard('CardCode', 'Nao encontrado', 'Sem CardCode nao consigo relacionar notas faturadas e grupos no SAP.'),
+        buildMarciCard('CNPJ consultado', formatted, '', {
+          category: 'SAP',
+          tone: 'info',
+        }),
+        buildMarciCard('CardCode', 'Nao encontrado', 'Sem CardCode nao consigo relacionar notas faturadas e grupos no SAP.', {
+          category: 'SAP',
+          tone: 'warning',
+        }),
       ],
       suggestions: [
-        `Consultar Gyra do CNPJ ${formatted}`,
+        `Analisar credito do CNPJ ${formatted}`,
         'Quais consultas o MARCI consegue fazer?',
       ],
       metadata: { cnpj: formatted, cardCode: null },
@@ -1112,6 +1177,10 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
         'Cliente SAP',
         formatted,
         `CardCode: ${cardCode}`,
+        {
+          category: 'SAP',
+          tone: 'info',
+        }
       ),
       buildMarciCard(
         'Indicadores SAP',
@@ -1151,6 +1220,8 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
             ],
           },
           emphasis: 'wide',
+          category: 'SAP',
+          tone: procedureRows.length ? 'info' : 'warning',
         }
       ),
       buildMarciCard(
@@ -1172,11 +1243,13 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
             rows: procedureRows.slice(0, 5).map(buildSapProcedureTableRow),
           },
           emphasis: 'wide',
+          category: 'SAP',
+          tone: procedureError ? 'warning' : 'info',
         }
       ),
     ],
     suggestions: [
-      `Consultar Gyra do CNPJ ${formatted}`,
+      `Analisar credito do CNPJ ${formatted}`,
       `Quero historico de pagamento do CNPJ ${formatted}`,
     ],
     metadata: { cnpj: formatted, cardCode },
@@ -1292,10 +1365,27 @@ async function sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate) {
   }
 }
 
+async function sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes = [], isoDate) {
+  const uniqueCardCodes = [...new Set(cardCodes.filter(Boolean))];
+  const updated = [];
+  const failed = [];
+
+  for (const cardCode of uniqueCardCodes) {
+    try {
+      await sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate);
+      updated.push(cardCode);
+    } catch (err) {
+      failed.push({ cardCode, error: err.message });
+    }
+  }
+
+  return { updated, failed };
+}
+
 async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null, force = false }) {
   const isApproved = String(statusFromReport || '').toUpperCase() === 'APPROVED';
   if (!force && !isApproved) {
-    return { status: 'skipped', reason: 'NOT_APPROVED', cardCode: null, dateSet: null };
+    return { status: 'skipped', reason: 'NOT_APPROVED', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], dateSet: null };
   }
 
   let resolvedCnpj = String(cnpjForLookup || '').trim();
@@ -1310,21 +1400,37 @@ async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLoo
 
   if (!resolvedCnpj) {
     console.warn('Approved but no CNPJ in DB; skipping SAP update');
-    return { status: 'skipped', reason: 'NO_CNPJ_IN_DB', cardCode: null, dateSet: null };
+    return { status: 'skipped', reason: 'NO_CNPJ_IN_DB', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], dateSet: null };
   }
 
-  const cardCode = await getCardCodeByCNPJ_HANA(resolvedCnpj);
-  if (!cardCode) {
+  const cardCodes = await getCardCodesByCNPJGroup_HANA(resolvedCnpj);
+  const cardCode = cardCodes[0] || null;
+
+  if (!cardCodes.length) {
     console.warn('CNPJ not found in CRD7.TaxId0; skipping', resolvedCnpj);
-    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, dateSet: null };
+    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], dateSet: null };
   }
 
   const sap = await sapCreateSession();
   const todayStr = new Date().toISOString().slice(0, 10);
-  await sapUpdateUltimaAnaliseCredito(sap, cardCode, todayStr);
+  const updateResult = await sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes, todayStr);
+  const status = updateResult.failed.length
+    ? updateResult.updated.length
+      ? 'partial'
+      : 'failed'
+    : 'success';
 
-  console.log(`✅ SAP updated U_dtUltimaAnaliseCredito for ${cardCode} (${resolvedCnpj})`);
-  return { status: 'success', reason: null, cardCode, dateSet: todayStr };
+  console.log(`✅ SAP updated U_dtUltimaAnaliseCredito for ${updateResult.updated.length}/${cardCodes.length} code(s) (${resolvedCnpj})`);
+  return {
+    status,
+    reason: status === 'success' ? null : 'SAP_CODES_UPDATE_FAILED',
+    cardCode,
+    cardCodes,
+    updatedCardCodes: updateResult.updated,
+    updatedCount: updateResult.updated.length,
+    failed: updateResult.failed,
+    dateSet: todayStr,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1355,6 +1461,23 @@ async function hanaQueryOne(sql, params = []) {
       stmt.exec(params, (err, rs) => (err ? reject(err) : resolve(rs)));
     });
     return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } finally {
+    try { conn.disconnect(); } catch (_) {}
+  }
+}
+
+async function hanaQueryAll(sql, params = []) {
+  const conn = hanaClient.createConnection();
+  await new Promise((resolve, reject) =>
+    conn.connect(hanaConnParams(), err => (err ? reject(err) : resolve()))
+  );
+
+  try {
+    const stmt = conn.prepare(sql);
+    const rows = await new Promise((resolve, reject) => {
+      stmt.exec(params, (err, rs) => (err ? reject(err) : resolve(rs)));
+    });
+    return Array.isArray(rows) ? rows : [];
   } finally {
     try { conn.disconnect(); } catch (_) {}
   }
@@ -1655,6 +1778,33 @@ async function getCardCodeByCNPJ_HANA(cnpjInput) {
 
   return null;
 }
+
+async function getCardCodesByCNPJGroup_HANA(cnpjInput) {
+  const digits = normalizeCNPJNumeric(cnpjInput || '');
+  if (digits.length !== 14) return [];
+
+  const root = digits.slice(0, 8);
+  const normalizeTaxIdSql = `REPLACE(REPLACE(REPLACE(T0."TaxId0", '.', ''), '/', ''), '-', '')`;
+  const sql = `
+    SELECT
+      T0."CardCode",
+      ${normalizeTaxIdSql} AS "TaxDigits"
+    FROM CRD7 T0
+    JOIN OCRD T1 ON T1."CardCode" = T0."CardCode"
+    WHERE T0."TaxId0" IS NOT NULL
+      AND LEFT(${normalizeTaxIdSql}, 8) = ?
+    ORDER BY
+      CASE WHEN ${normalizeTaxIdSql} = ? THEN 0 ELSE 1 END,
+      T0."CardCode"
+  `;
+
+  const rows = await hanaQueryAll(sql, [root, digits]);
+  const cardCodes = rows
+    .map((row) => row?.CardCode)
+    .filter(Boolean);
+
+  return [...new Set(cardCodes)];
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -1865,6 +2015,10 @@ app.get('/api/report/:id', async (req, res) => {
       if (sapUpdate.cardCode) {
         res.set('X-SAP-CardCode', sapUpdate.cardCode);
       }
+      if (sapUpdate.cardCodes?.length) {
+        res.set('X-SAP-CardCodes', sapUpdate.cardCodes.join(','));
+        res.set('X-SAP-Updated-Count', String(sapUpdate.updatedCount || 0));
+      }
     } catch (e) {
       console.error('❌ SAP update failed:', e.message);
       res.set('X-SAP-Update', 'skipped');
@@ -1912,12 +2066,14 @@ app.post('/api/report/:id/update-sap-manual', async (req, res) => {
       force: true,
     });
 
-    if (sapUpdate.status === 'success') {
+    if (sapUpdate.status === 'success' || sapUpdate.status === 'partial') {
       return res.json({
         ...sapUpdate,
         reportId,
         companyName: reportRow.business_name || null,
-        message: 'SAP atualizado manualmente com sucesso.',
+        message: sapUpdate.status === 'partial'
+          ? `SAP atualizado parcialmente: ${sapUpdate.updatedCount || 0} codigo(s) atualizado(s), com falha em ${sapUpdate.failed?.length || 0}.`
+          : `SAP atualizado manualmente com sucesso em ${sapUpdate.updatedCount || 0} codigo(s).`,
       });
     }
 

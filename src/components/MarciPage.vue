@@ -60,9 +60,12 @@
                       v-for="card in message.cards"
                       :key="`${message.id}-${card.title}`"
                       class="card-item"
-                      :class="{ 'card-item-wide': card.emphasis === 'wide' }"
+                      :class="getCardClasses(card)"
                     >
-                      <span class="card-label">{{ card.title }}</span>
+                      <div class="card-heading">
+                        <span class="card-label">{{ card.title }}</span>
+                        <span v-if="card.category" class="card-category">{{ card.category }}</span>
+                      </div>
                       <div
                         v-if="card.table?.rows?.length"
                         class="card-table"
@@ -184,6 +187,15 @@ function formatCopyValue(value) {
   return String(value);
 }
 
+function normalizeCardToken(value) {
+  return String(value || 'default')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase() || 'default';
+}
+
 async function writeTextToClipboard(text) {
   if (navigator.clipboard?.writeText && window.isSecureContext) {
     await navigator.clipboard.writeText(text);
@@ -280,6 +292,15 @@ export default {
       if (this.copyFailedMessageId === messageId) return 'Erro ao copiar';
       return 'Copiar';
     },
+    getCardClasses(card) {
+      return [
+        {
+          'card-item-wide': card?.emphasis === 'wide',
+        },
+        `card-category-${normalizeCardToken(card?.category)}`,
+        `card-tone-${normalizeCardToken(card?.tone)}`,
+      ];
+    },
     buildCopyText(message) {
       const lines = [message.text || ''];
 
@@ -342,7 +363,7 @@ export default {
         cards: [],
         suggestions: [
           'Quais consultas o MARCI consegue fazer?',
-          'Consultar Gyra do CNPJ 12.345.678/0001-99',
+          'Analisar credito do CNPJ 12.345.678/0001-99',
         ],
         metadata: {},
       });
@@ -774,17 +795,76 @@ h1 {
   border: 1px solid rgba(255, 211, 61, 0.12);
 }
 
+.card-category-gyra {
+  border-color: rgba(255, 211, 61, 0.18);
+}
+
+.card-category-sap {
+  border-color: rgba(145, 191, 255, 0.22);
+  background: linear-gradient(145deg, rgba(145, 191, 255, 0.07), rgba(255, 243, 204, 0.045));
+}
+
+.card-category-analise {
+  border-color: rgba(255, 211, 61, 0.26);
+  background: linear-gradient(145deg, rgba(217, 173, 31, 0.11), rgba(255, 243, 204, 0.045));
+}
+
+.card-category-status,
+.card-tone-pending {
+  border-color: rgba(255, 202, 82, 0.34);
+  background:
+    radial-gradient(circle at top left, rgba(255, 209, 76, 0.16), transparent 46%),
+    rgba(255, 243, 204, 0.055);
+}
+
+.card-category-acao {
+  border-color: rgba(255, 247, 225, 0.2);
+  background: linear-gradient(145deg, rgba(255, 247, 225, 0.08), rgba(255, 211, 61, 0.045));
+}
+
+.card-tone-warning {
+  border-color: rgba(239, 153, 69, 0.36);
+  background: linear-gradient(145deg, rgba(163, 74, 40, 0.16), rgba(255, 243, 204, 0.045));
+}
+
+.card-tone-insight {
+  box-shadow: inset 0 1px 0 rgba(255, 231, 151, 0.08);
+}
+
 .card-item-wide {
   grid-column: 1 / -1;
 }
 
-.card-label {
-  display: block;
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 8px;
+}
+
+.card-label {
+  display: inline-flex;
   color: #dcb33b;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.card-category {
+  flex: 0 0 auto;
+  max-width: 92px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 247, 225, 0.08);
+  border: 1px solid rgba(255, 247, 225, 0.1);
+  color: rgba(255, 247, 225, 0.7);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  line-height: 1.2;
+  text-align: center;
   text-transform: uppercase;
 }
 

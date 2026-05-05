@@ -165,7 +165,7 @@ export default {
     },
 
     _buildSapManualMessage(result = {}) {
-      if (result.status === 'success') {
+      if (result.status === 'success' || result.status === 'partial') {
         return result.message || 'SAP atualizado com sucesso ✅';
       }
 
@@ -178,6 +178,8 @@ export default {
           return 'Não encontrei este cliente no SAP a partir do CNPJ da última consulta.';
         case 'SAP_UPDATE_ERROR':
           return result.message || 'Ocorreu um erro ao atualizar o SAP manualmente.';
+        case 'SAP_CODES_UPDATE_FAILED':
+          return result.message || 'Nao foi possivel atualizar os codigos relacionados no SAP.';
         default:
           return result.message || 'Não foi possível atualizar o SAP com os dados da última consulta.';
       }
@@ -190,7 +192,7 @@ export default {
       try {
         const result = await updateReportSapManual({ reportId: this.lastReportId });
         const message = this._buildSapManualMessage(result);
-        const kind = result.status === 'success' ? 'ok' : 'error';
+        const kind = result.status === 'success' || result.status === 'partial' ? 'ok' : 'error';
         this._showToast(message, kind, 3200);
       } catch (err) {
         console.error('❌ QualificarCliente.handleAtualizarSapManual:', err);
