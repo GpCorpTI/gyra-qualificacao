@@ -116,6 +116,25 @@ function formatCNPJMask(digits14) {
   return `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12,14)}`;
 }
 
+function normalizePlainText(input = '') {
+  return String(input)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+function isCashOnlyCreditStatus(status = '') {
+  const normalized = normalizePlainText(status);
+  return (
+    normalized.includes('A VISTA') ||
+    normalized.includes('REJECTED') ||
+    normalized.includes('DENIED') ||
+    normalized.includes('NEGADO') ||
+    normalized.includes('REPROVADO')
+  );
+}
+
 // Limpa "{{ ... }}" de descrições
 function cleanDescription(text) {
   return (text || '').replace(/\{\{.*?\}\}/g, '').trim();
@@ -586,6 +605,17 @@ function buildMarciGyraBaseCards(summary) {
       }
     ),
   ];
+
+  if (summary.clientPhone) {
+    cards.push(
+      buildMarciCard(
+        'Telefone do cliente',
+        summary.clientPhone,
+        'Retornado porque o resultado do motor indica atendimento a vista.',
+        { category: 'SAP', tone: 'warning' }
+      )
+    );
+  }
 
   return cards;
 }
@@ -1101,6 +1131,17 @@ async function getMarciGyraSummaryData({ cnpj, policyId, includeFullReport = fal
     summary.sapUpdateCardCode = null;
     summary.sapUpdateCardCodes = [];
     summary.sapUpdateUpdatedCount = 0;
+  }
+
+  if (isCashOnlyCreditStatus(summary.status)) {
+    try {
+      summary.clientPhone = await getClientPhoneByCNPJ_HANA(normalized);
+    } catch (err) {
+      logger.warn({ err: err.message, cnpj: summary.cnpj, reportId }, 'marci.sap.phone.lookup.failed');
+      summary.clientPhone = null;
+    }
+  } else {
+    summary.clientPhone = null;
   }
 
   if (includeFullReport) {
@@ -1828,6 +1869,37 @@ async function getCardCodesByCNPJGroup_HANA(cnpjInput) {
 
   return [...new Set(cardCodes)];
 }
+
+function pickSapPhone(row = {}) {
+  const phone = row.Phone1 || row.Phone2 || row.Cellular || row.phone1 || row.phone2 || row.cellular;
+  return String(phone || '').trim() || null;
+}
+
+async function getClientPhoneByCNPJ_HANA(cnpjInput) {
+  const digits = normalizeCNPJNumeric(cnpjInput || '');
+  if (digits.length !== 14) return null;
+
+  const formatted = formatCNPJMask(digits);
+  const normalizeTaxIdSql = `REPLACE(REPLACE(REPLACE(T0."TaxId0", '.', ''), '/', ''), '-', '')`;
+  const sql = `
+    SELECT
+      T1."CardCode",
+      T1."Phone1",
+      T1."Phone2",
+      T1."Cellular"
+    FROM CRD7 T0
+    JOIN OCRD T1 ON T1."CardCode" = T0."CardCode"
+    WHERE T0."TaxId0" = ?
+       OR ${normalizeTaxIdSql} = ?
+    ORDER BY
+      CASE WHEN T0."TaxId0" = ? THEN 0 ELSE 1 END,
+      T1."CardCode"
+    LIMIT 1
+  `;
+
+  const row = await hanaQueryOne(sql, [formatted, digits, formatted]);
+  return pickSapPhone(row);
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -1980,12 +2052,17 @@ app.get('/api/report/:id', async (req, res) => {
 
     const reportId = req.params.id;
 
-    // 1) DB: created_at
+    // 1) DB: created_at + CNPJ
     const createdRows = await execRows(
-      'SELECT created_at FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+      'SELECT created_at, cnpj, normalized_cnpj, formatted_cnpj FROM cnpj_reports WHERE report_id = ? LIMIT 1',
       [reportId]
     );
      createdAt = createdRows?.[0]?.created_at || null;
+    const reportCnpjForLookup =
+      createdRows?.[0]?.normalized_cnpj ||
+      createdRows?.[0]?.cnpj ||
+      createdRows?.[0]?.formatted_cnpj ||
+      '';
 
     // 2) Gyra: full report
     const resp = await axios.get(
@@ -2047,11 +2124,20 @@ app.get('/api/report/:id', async (req, res) => {
       res.set('X-SAP-Update', 'skipped');
       res.set('X-SAP-Reason', 'SAP_UPDATE_ERROR');
     }
+
+    let clientPhone = null;
+    if (isCashOnlyCreditStatus(fullReport?.status?.key) || isCashOnlyCreditStatus(statusFromReport)) {
+      try {
+        clientPhone = await getClientPhoneByCNPJ_HANA(reportCnpjForLookup);
+      } catch (e) {
+        req.log?.warn?.({ err: e.message, reportId }, 'report.sap.phone.lookup.failed');
+      }
+    }
       
     // 5) Return Gyra data + our DB timestamp
     const dur = Date.now() - start;
     req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
-    res.json({...fullReport, createdAt });
+    res.json({...fullReport, createdAt, clientPhone });
 
   } catch (err) {
     const dur = Date.now() - start;

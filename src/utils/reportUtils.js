@@ -55,6 +55,7 @@ export function extractReportData(report) {
   const statusKey   = report?.status?.key?.toUpperCase() || '';
   const statusValue = report?.status?.value || 'Sem status';
   const companyName = extractCompanyName(report);
+  const clientPhone = report?.clientPhone || '';
 
   // ✅ Frontend-only override: if pending, show a single risk "Pendente" and hide rules
   if (statusKey === 'PENDING' || statusValue.toLowerCase().includes('pend')) {
@@ -63,6 +64,7 @@ export function extractReportData(report) {
       mainStatus: statusValue || 'Pendente',
       riskInfo: ['Pendente'],
       policySummaries: [],
+      clientPhone,
     };
   }
 
@@ -97,6 +99,7 @@ export function extractReportData(report) {
     mainStatus: statusValue,
     riskInfo: Array.from(risks),
     policySummaries,
+    clientPhone,
   };
 }
 
@@ -149,6 +152,7 @@ export function buildQualificacaoClipboardText(report) {
 
   const score = getSummaryItem("Score Serasa")?.value || "N/D";
   const risco = report?.status?.value === "REJECTED" ? "Altíssimo" : "Não crítico";
+  const telefoneCliente = report?.clientPhone || "";
 
   // =================== DATA ANÁLISE (MOTOR) ===================
   const dataAnaliseMotor =
@@ -284,6 +288,7 @@ Vendedor: Marketing
 
 Score: ${score}
 Risco: ${risco}
+${telefoneCliente ? `Telefone: ${telefoneCliente}\n` : ""}
 
 Fundação: ${formatarData(dataFundacao)} - ${tempoAberturaTexto}
 Possui restrição:

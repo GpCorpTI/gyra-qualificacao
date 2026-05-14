@@ -28,6 +28,7 @@
       <div v-if="companyName" class="company-header">
         <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
         <p v-if="cnpj" class="company-cnpj">CNPJ: {{ cnpj }}</p>
+        <p v-if="clientPhone" class="company-cnpj">Telefone: {{ clientPhone }}</p>
       </div>
 
       <div class="btn-group">
@@ -110,6 +111,7 @@ export default {
       riskInfo: [],
       policySummaries: [],
       dbCreatedAt: null,
+      clientPhone: '',
       toast: { visible: false, message: '', kind: 'ok', _t: null },
     };
   },
@@ -256,6 +258,7 @@ export default {
       this.report  = null;
       this.lastReportId = '';
       this.companyName = '';
+      this.clientPhone = '';
 
       try {
         const token = await getToken();
@@ -274,11 +277,12 @@ export default {
         this.lastReportId = fullReport?.id || reportId;
         this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
-        const { companyName, mainStatus, riskInfo, policySummaries } = extractReportData(fullReport);
+        const { companyName, mainStatus, riskInfo, policySummaries, clientPhone } = extractReportData(fullReport);
         this.companyName    = companyName;
         this.mainStatus     = mainStatus;
         this.riskInfo       = riskInfo;
         this.policySummaries = policySummaries;
+        this.clientPhone = clientPhone || '';
       } catch (err) {
         console.error('❌ Marketing.handleCNPJSearch:', err);
         this.error = err.response?.data?.error || err.message;
