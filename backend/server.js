@@ -18,7 +18,7 @@ const MARCI_GYRA_REUSE_DAYS = Number(process.env.MARCI_GYRA_REUSE_DAYS || 45);
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
-const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1200);
+const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1600);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPTitulosEmAberto"';
 const app = express();
@@ -716,6 +716,7 @@ function buildMarciGyraClaudeSystemPrompt() {
     '<ESTILO>',
     'Sempre responda em portugues do Brasil, com tom executivo e analitico, nivel especialista, claro, direto e sem enrolacao.',
     'Evite linguagem generica, repeticao de dados brutos, separacao por sistema e resumo simples.',
+    'A resposta deve ser consistentemente detalhada. Nunca retorne uma analise curta, superficial ou apenas conclusiva quando houver dados para interpretar.',
     '</ESTILO>',
     '<INSTRUCAO>',
     'Sua analise deve obrigatoriamente responder, ainda que implicitamente: existe capacidade real de pagamento; o comportamento no SAP sustenta o credito; o risco e compativel com o limite atual, solicitado ou recomendado; existe coerencia entre faturamento, limite e endividamento; ha conflitos entre GYRA+ e SAP.',
@@ -725,7 +726,9 @@ function buildMarciGyraClaudeSystemPrompt() {
     'Considere desproporcao entre faturamento e limite, baixa densidade de dados, dependencia de excecoes, comportamento recente pior que historico e sinais de risco oculto.',
     '</INSTRUCAO>',
     '<ANALISE_OBRIGATORIA>',
-    'Inclua mentalmente: diagnostico geral do cliente; severidade do risco sem rotular explicitamente; consistencia entre GYRA+ e SAP; pontos fortes quando existirem; pontos de cautela; oportunidades de credito, comerciais ou de acompanhamento; direcionamento pratico do que faz sentido fazer a seguir.',
+    'Inclua obrigatoriamente, dentro do answer, todos estes pontos: diagnostico geral do cliente; capacidade de pagamento; comportamento financeiro/SAP quando disponivel; coerencia entre faturamento, limite e risco; consistencia ou divergencia entre GYRA+ e SAP; pontos fortes quando existirem; pontos de cautela; oportunidades de credito, comerciais ou de acompanhamento; direcionamento pratico do que faz sentido fazer a seguir.',
+    'Mesmo quando os dados forem escassos, a analise deve ser completa: explique quais dados faltam, por que a ausencia importa e como isso limita a decisao.',
+    'Mantenha uma estrutura estavel no answer: primeiro diagnostico integrado, depois leitura de risco e capacidade, depois oportunidades ou cautelas, e por fim encaminhamento pratico.',
     '</ANALISE_OBRIGATORIA>',
     '<REGRAS>',
     'Nunca analise apenas uma fonte se ambas estiverem disponiveis. Nunca ignore conflito entre dados. Nunca invente informacoes. Nunca conclua aprovacao ou reprovacao final. Nunca crie regras de negocio inexistentes. Nunca faca analise superficial. Se faltar dado relevante, trate como risco.',
@@ -736,10 +739,11 @@ function buildMarciGyraClaudeSystemPrompt() {
     '</INSIGHTS>',
     '<RESPOSTA>',
     'A resposta deve ser analitica, integrada e orientada a decisao. Priorize interpretacao, implicacao e direcionamento. Nao use markdown no campo answer; escreva em paragrafos curtos.',
+    'O answer deve ter densidade analitica: cada paragrafo precisa explicar o que o dado indica, por que isso importa para credito e qual efeito pratico tem na decisao.',
     '</RESPOSTA>',
     '<OUTPUT>',
     'Sempre responda SOMENTE em JSON valido. Nunca envie texto fora do JSON.',
-    'Formato obrigatorio: {"answer":"analise completa e integrada entre 180 e 320 palavras","highlights":["ponto relevante ou oportunidade"],"warnings":["ponto de risco ou cautela"],"suggestions":["pergunta acionavel para aprofundamento"]}.',
+    'Formato obrigatorio: {"answer":"analise completa e integrada entre 260 e 420 palavras","highlights":["ponto relevante ou oportunidade"],"warnings":["ponto de risco ou cautela"],"suggestions":["pergunta acionavel para aprofundamento"]}.',
     'Regras: highlights deve ter entre 3 e 6 itens; warnings entre 0 e 5 itens; suggestions entre 0 e 3 itens.',
     '</OUTPUT>',
     '</AGENTE_MARCI_CREDITO>',
