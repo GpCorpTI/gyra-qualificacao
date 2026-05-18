@@ -20,6 +20,16 @@
           </div>
         </router-link>
 
+        <router-link class="launch-card order-card" :to="{ name: 'liberacaoPedido' }">
+          <span class="launch-icon">✅</span>
+          <div class="launch-copy">
+            <h2>LIBERAÇÃO DE PEDIDO</h2>
+            <p>
+              Verifique se o cliente foi aprovado na política de liberação e atualize o CRM B1 da Arkab.
+            </p>
+          </div>
+        </router-link>
+
         <router-link class="launch-card marci-card" :to="{ name: 'pinMarci' }">
           <span class="launch-icon">🚘</span>
           <div class="launch-copy">
@@ -114,6 +124,14 @@ h1 {
 
 .marci-card {
   background-color: rgba(255, 211, 61, 0.34);
+}
+
+.order-card {
+  background-color: rgba(32, 155, 103, 0.35);
+}
+
+.order-card:hover {
+  background-color: #2f6f4f;
 }
 
 .marci-card:hover {

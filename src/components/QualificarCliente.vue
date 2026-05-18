@@ -27,13 +27,18 @@
       
       <div v-if="companyName" class="company-header">
         <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
-        <p v-if="cnpj" class="company-cnpj">CNPJ: {{ cnpj }}</p>
+        <p v-if="consultedCnpj" class="company-cnpj">CNPJ: {{ consultedCnpj }}</p>
+        <p v-if="estimatedBilling" class="company-cnpj">Faturamento estimado: {{ estimatedBilling }}</p>
         <p v-if="clientPhone" class="company-cnpj">Telefone: {{ clientPhone }}</p>
       </div>
 
       <div class="btn-group">
         <button class="btn-copy" @click="handleCopy" :disabled="!report">
           Copiar resumo
+        </button>
+
+        <button class="btn-copy-full" @click="handleCopyFull" :disabled="!report">
+          Copiar análise completa
         </button>
 
         <button
@@ -93,6 +98,7 @@ import {
   cleanDescription,
   formatDateTime,
   buildQualificacaoClipboardText,
+  buildAnaliseCreditoCompletaClipboardText,
 } from '@/utils/reportUtils';
 import { buildOdgPayload } from '@/utils/buildOdgPayload';
 
@@ -106,12 +112,14 @@ export default {
       error: '',
       report: null,
       lastReportId: '',
+      consultedCnpj: '',
       companyName: '',
       mainStatus: '',
       riskInfo: [],
       policySummaries: [],
       dbCreatedAt: null,
       clientPhone: '',
+      estimatedBilling: '',
       toast: { visible: false, message: '', kind: 'ok', _t: null },
     };
   },
@@ -163,6 +171,14 @@ export default {
       const text = buildQualificacaoClipboardText(this.report);
       const ok = await this._copyToClipboard(text);
       if (ok) this._showToast('Copiado para a área de transferência ✅', 'ok');
+      else    this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
+    },
+
+    async handleCopyFull() {
+      if (!this.report) return;
+      const text = buildAnaliseCreditoCompletaClipboardText(this.report);
+      const ok = await this._copyToClipboard(text);
+      if (ok) this._showToast('Análise completa copiada ✅', 'ok');
       else    this._showToast('Não foi possível copiar. Verifique permissões.', 'error', 2600);
     },
 
@@ -257,15 +273,18 @@ export default {
       this.error   = '';
       this.report  = null;
       this.lastReportId = '';
+      this.consultedCnpj = '';
       this.companyName = '';
       this.clientPhone = '';
+      this.estimatedBilling = '';
 
       try {
+        const requestedCnpj = this.cnpj;
         const token = await getToken();
 
         const created = await createReport({
           token,
-          cnpj: this.cnpj,
+          cnpj: requestedCnpj,
           policyId: process.env.VUE_APP_GYRA_POLICY_ID,
           sector: 'CRDT',
         });
@@ -275,14 +294,16 @@ export default {
         const fullReport = await getReportById({ token, reportId });
         this.report      = fullReport;
         this.lastReportId = fullReport?.id || reportId;
+        this.consultedCnpj = created.formatted || fullReport?.formatted_cnpj || fullReport?.cnpj || requestedCnpj;
         this.dbCreatedAt = fullReport.createdAt || this.dbCreatedAt;
 
-        const { companyName, mainStatus, riskInfo, policySummaries, clientPhone } = extractReportData(fullReport);
+        const { companyName, mainStatus, riskInfo, policySummaries, clientPhone, estimatedBilling } = extractReportData(fullReport);
         this.companyName    = companyName;
         this.mainStatus     = mainStatus;
         this.riskInfo       = riskInfo;
         this.policySummaries = policySummaries;
         this.clientPhone = clientPhone || '';
+        this.estimatedBilling = estimatedBilling || '';
       } catch (err) {
         console.error('❌ Marketing.handleCNPJSearch:', err);
         this.error = err.response?.data?.error || err.message;
@@ -305,6 +326,7 @@ export default {
 }
 
 .btn-copy,
+.btn-copy-full,
 .btn-sap,
 .btn-pdf {
   padding: 8px 12px;
@@ -317,6 +339,11 @@ export default {
 
 .btn-copy {
   background: #1f7aed;
+  color: #fff;
+}
+
+.btn-copy-full {
+  background: #264653;
   color: #fff;
 }
 

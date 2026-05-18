@@ -9,6 +9,7 @@ import ComercialPage from '@/components/ComercialPage.vue'
 import MarketingPinPage from '@/components/MarketingPinPage.vue'
 import MarciPage from '@/components/MarciPage.vue'
 import MarciPinPage from '@/components/MarciPinPage.vue'
+import LiberacaoPedido from '@/components/LiberacaoPedido.vue'
 
 
 const routes = [
@@ -19,6 +20,7 @@ const routes = [
   { path: '/pin-marketing',   name: 'pinMkt',       component: MarketingPinPage},
   { path: '/pin-marci',       name: 'pinMarci',     component: MarciPinPage },
   { path: '/credito',         name: 'credito',      component: QualificarCliente, meta: { requiresAuth: true } },
+  { path: '/liberacao-pedido', name: 'liberacaoPedido', component: LiberacaoPedido, meta: { requiresAuth: true } },
   { path: '/marketing',       name: 'marketing',    component: Marketing,         meta: {requiresMarketingAuth : true} },
   { path: '/listarreport',    name: 'listarreport', component: ListarReport,      meta: { requiresAuth: true } },
   { path: '/comercial',       name: 'comercial',    component: ComercialPage,},

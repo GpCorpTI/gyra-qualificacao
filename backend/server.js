@@ -14,13 +14,20 @@ import hanaClient from '@sap/hana-client';
 
 dotenv.config();
 const PORT = Number(process.env.PORT);
-const MARCI_GYRA_REUSE_DAYS = Number(process.env.MARCI_GYRA_REUSE_DAYS || 45);
+const GYRA_REPORT_REUSE_DAYS = Number(process.env.GYRA_REPORT_REUSE_DAYS || process.env.MARCI_GYRA_REUSE_DAYS || 45);
+const MARCI_GYRA_REUSE_DAYS = GYRA_REPORT_REUSE_DAYS;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1600);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPTitulosEmAberto"';
+const CRM_B1_WEBHOOK_URL = process.env.CRM_B1_WEBHOOK_URL || '';
+const CRM_B1_WEBHOOK_TOKEN = process.env.CRM_B1_WEBHOOK_TOKEN || '';
+const CRM_B1_CREDIT_ANALYSIS_OPERATION = process.env.CRM_B1_CREDIT_ANALYSIS_OPERATION || 'credit_analysis_date_updated';
+const ORDER_RELEASE_POLICY_ID = process.env.ORDER_RELEASE_POLICY_ID || '6a0747892fab8c8353859468';
+const ORDER_RELEASE_SECTOR = process.env.ORDER_RELEASE_SECTOR || 'ORDER_RELEASE';
+const CRM_B1_ORDER_RELEASE_OPERATION = process.env.CRM_B1_ORDER_RELEASE_OPERATION || 'order_release_credit_check';
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -1371,6 +1378,116 @@ function buildMarciUnknownResponse() {
   });
 }
 
+async function getOrCreateGyraReportForSector({ normalizedCnpj, formattedCnpj, policyId, sector }) {
+  const token = await requestGyraToken();
+  const existing = await execRows(
+    `SELECT report_id, created_at, formatted_cnpj
+       FROM cnpj_reports
+      WHERE normalized_cnpj = ?
+        AND sector = ?
+        AND created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [normalizedCnpj, sector]
+  );
+
+  if (existing.length) {
+    return {
+      token,
+      reportId: existing[0].report_id,
+      createdAt: existing[0].created_at,
+      reused: true,
+    };
+  }
+
+  const reportId = await createGyraReport(token, normalizedCnpj, policyId);
+  await pool.execute(
+    `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
+     VALUES (?, ?, ?, ?, ?, NOW())`,
+    [formattedCnpj || normalizedCnpj, normalizedCnpj, formattedCnpj, reportId, sector]
+  );
+
+  return {
+    token,
+    reportId,
+    createdAt: new Date().toISOString(),
+    reused: false,
+  };
+}
+
+async function updateStoredReportSummary(reportId, fullReport) {
+  const { statusValue, risks, rules, businessName } = extractReportSummary(fullReport);
+
+  await pool.execute(
+    `UPDATE cnpj_reports
+        SET status_value = ?,
+            risks = ?,
+            rules = ?,
+            business_name = ?
+      WHERE report_id = ?`,
+    [
+      statusValue || null,
+      JSON.stringify(risks || []),
+      JSON.stringify(rules || []),
+      businessName || null,
+      reportId,
+    ]
+  );
+}
+
+async function buildOrderReleaseResult({ cnpj }) {
+  const normalized = normalizeCNPJNumeric(cnpj);
+
+  if (!isValidCNPJ(normalized)) {
+    const error = new Error('CNPJ invalido');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const formatted = formatCNPJMask(normalized);
+  const { token, reportId, createdAt, reused } = await getOrCreateGyraReportForSector({
+    normalizedCnpj: normalized,
+    formattedCnpj: formatted,
+    policyId: ORDER_RELEASE_POLICY_ID,
+    sector: ORDER_RELEASE_SECTOR,
+  });
+  const fullReport = await fetchGyraReport(token, reportId);
+  const statusKey = String(fullReport?.status?.key || '').toUpperCase();
+  const statusValue = fullReport?.status?.value || statusKey || 'Sem status';
+  const isPending = statusKey === 'PENDING' || normalizePlainText(statusValue).includes('PEND');
+  const approved = statusKey === 'APPROVED' || normalizePlainText(statusValue).includes('APROV');
+
+  if (!isPending) {
+    await updateStoredReportSummary(reportId, fullReport);
+  }
+
+  const cardCode = await getCardCodeByCNPJ_HANA(normalized);
+  let crmWebhook = { status: 'skipped', reason: isPending ? 'GYRA_PENDING' : 'CARD_CODE_NOT_FOUND' };
+
+  if (!isPending && cardCode) {
+    crmWebhook = await notifyCrmB1Webhook({
+      key: cardCode,
+      operation: CRM_B1_ORDER_RELEASE_OPERATION,
+      additionalInformation: approved ? 'APPROVED' : 'NOT_APPROVED',
+    });
+  }
+
+  return {
+    cnpj: formatted,
+    reportId,
+    reused,
+    createdAt,
+    companyName: extractCompanyName(fullReport) || 'Nao identificado',
+    statusKey,
+    statusValue,
+    approved,
+    pending: isPending,
+    cardCode,
+    policyId: ORDER_RELEASE_POLICY_ID,
+    crmWebhook,
+  };
+}
+
 async function executeMarciIntent({ intent, cnpj, policyId, userMessage }) {
   switch (intent) {
     case 'help':
@@ -1450,6 +1567,65 @@ async function sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes = [], isoDat
   return { updated, failed };
 }
 
+async function notifyCrmB1Webhook({ key, operation, additionalInformation = '' }) {
+  const normalizedKey = String(key || '').trim();
+  const normalizedOperation = String(operation || '').trim();
+
+  if (!CRM_B1_WEBHOOK_URL || !CRM_B1_WEBHOOK_TOKEN || !normalizedKey || !normalizedOperation) {
+    return { status: 'skipped', reason: 'CRM_B1_WEBHOOK_NOT_CONFIGURED' };
+  }
+
+  try {
+    const response = await axios.post(CRM_B1_WEBHOOK_URL, null, {
+      params: {
+        objtype: '2',
+        key: normalizedKey,
+        operation: normalizedOperation,
+        additional_information: String(additionalInformation || ''),
+        token: CRM_B1_WEBHOOK_TOKEN,
+      },
+      timeout: 30000,
+    });
+
+    return {
+      status: 'success',
+      statusCode: response.status,
+      operation: normalizedOperation,
+    };
+  } catch (err) {
+    logger.warn(
+      {
+        err: err.message,
+        statusCode: err.response?.status,
+        data: err.response?.data,
+        key: normalizedKey,
+      },
+      'crm.b1.webhook.failed'
+    );
+
+    return {
+      status: 'failed',
+      reason: 'CRM_B1_WEBHOOK_ERROR',
+      error: err.message,
+      statusCode: err.response?.status || null,
+    };
+  }
+}
+
+async function notifyCrmB1CreditAnalysisUpdate({ key, cardCodes = [] }) {
+  const relatedCodes = [...new Set(cardCodes.filter(Boolean))];
+
+  if (!relatedCodes.length) {
+    return { status: 'skipped', reason: 'NO_RELATED_CARD_CODES' };
+  }
+
+  return notifyCrmB1Webhook({
+    key,
+    operation: CRM_B1_CREDIT_ANALYSIS_OPERATION,
+    additionalInformation: relatedCodes.join(','),
+  });
+}
+
 async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null, force = false }) {
   const isApproved = String(statusFromReport || '').toUpperCase() === 'APPROVED';
   if (!force && !isApproved) {
@@ -1488,6 +1664,13 @@ async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLoo
       : 'failed'
     : 'success';
 
+  const crmWebhook = updateResult.updated.length
+    ? await notifyCrmB1CreditAnalysisUpdate({
+        key: cardCode,
+        cardCodes: updateResult.updated,
+      })
+    : { status: 'skipped', reason: 'NO_SAP_CODES_UPDATED' };
+
   console.log(`✅ SAP updated U_dtUltimaAnaliseCredito for ${updateResult.updated.length}/${cardCodes.length} code(s) (${resolvedCnpj})`);
   return {
     status,
@@ -1497,6 +1680,7 @@ async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLoo
     updatedCardCodes: updateResult.updated,
     updatedCount: updateResult.updated.length,
     failed: updateResult.failed,
+    crmWebhook,
     dateSet: todayStr,
   };
 }
@@ -1932,7 +2116,7 @@ app.post('/api/token', async (req, res) => {
   }
 });
 
-// Criação/reativação de Report (normaliza CNPJ e reusa ≤90 dias)
+// Criação/reativação de Report (normaliza CNPJ e reusa dentro da janela configurada)
 app.post('/api/report', async (req, res) => {
   const start = Date.now();
   let reused = false;
@@ -1944,12 +2128,12 @@ app.post('/api/report', async (req, res) => {
       return res.status(400).json({ error: 'CNPJ inválido' });
     }
     const formatted = formatCNPJMask(normalized);
-    // 1) Verifica se já existe report em ≤ 90 dias para este CNPJ normalizado
+    // 1) Verifica se já existe report dentro da janela configurada para este CNPJ normalizado
   const exists = await execRows(
     `SELECT id, report_id, formatted_cnpj, created_at
       FROM cnpj_reports
       WHERE normalized_cnpj = ?
-        AND created_at > NOW() - INTERVAL 90 DAY
+        AND created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
       ORDER BY created_at DESC
       LIMIT 1`,
     [normalized]
@@ -2042,6 +2226,34 @@ app.post('/api/marci/chat', async (req, res) => {
     const dur = Date.now() - start;
     req.log.error({ err: err.message, ms: dur }, 'marci.chat.fail');
     res.status(err.statusCode || 500).json({ error: err.message || 'Erro ao processar a conversa do MARCI' });
+  }
+});
+
+app.post('/api/order-release', async (req, res) => {
+  const start = Date.now();
+
+  try {
+    const { cnpj } = req.body || {};
+    const result = await buildOrderReleaseResult({ cnpj });
+    const dur = Date.now() - start;
+
+    req.log.info(
+      {
+        cnpj: result.cnpj,
+        reportId: result.reportId,
+        approved: result.approved,
+        pending: result.pending,
+        crmWebhook: result.crmWebhook?.status,
+        ms: dur,
+      },
+      'order.release.check'
+    );
+
+    res.json(result);
+  } catch (err) {
+    const dur = Date.now() - start;
+    req.log.error({ err: err.message, ms: dur }, 'order.release.check.fail');
+    res.status(err.statusCode || 500).json({ error: err.message || 'Erro ao consultar liberacao de pedido' });
   }
 });
 
@@ -2208,7 +2420,7 @@ app.post('/api/report/:id/update-sap-manual', async (req, res) => {
   }
 });
 
-// Lista (90 dias)
+// Lista dentro da janela configurada
 app.get('/api/reports', async (req, res) => {
   try {
     const rows = await execRows(
@@ -2225,7 +2437,7 @@ app.get('/api/reports', async (req, res) => {
          rules,
          created_at
        FROM cnpj_reports
-       WHERE created_at > NOW() - INTERVAL 90 DAY
+       WHERE created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
        ORDER BY created_at DESC`
     );
     res.json(rows);
@@ -2235,13 +2447,13 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-// Export XLSX (90 dias)
+// Export XLSX dentro da janela configurada
 app.get('/api/reports.xlsx', async (req, res) => {
   try {
     const [rows] = await pool.execute(
       `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, rules, risks, created_at
          FROM cnpj_reports
-        WHERE created_at > NOW() - INTERVAL 90 DAY
+        WHERE created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
         ORDER BY created_at DESC`
     );
 
@@ -2261,11 +2473,11 @@ app.get('/api/reports.xlsx', async (req, res) => {
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(data);
-    XLSX.utils.book_append_sheet(wb, ws, 'reports_90d');
+    XLSX.utils.book_append_sheet(wb, ws, `reports_${GYRA_REPORT_REUSE_DAYS}d`);
 
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition','attachment; filename="reports_90d.xlsx"');
+    res.setHeader('Content-Disposition','attachment; filename="reports.xlsx"');
     res.send(buf);
   } catch (err) {
     console.error('❌ /api/reports.xlsx:', err.message);

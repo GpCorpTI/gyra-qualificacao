@@ -58,3 +58,8 @@ export async function sendMarciMessage({ message, history = [], policyId }) {
   const { data } = await api.post('/marci/chat', { message, history, policyId });
   return data;
 }
+
+export async function checkOrderRelease({ cnpj }) {
+  const { data } = await api.post('/order-release', { cnpj });
+  return data;
+}

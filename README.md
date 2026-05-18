@@ -24,6 +24,14 @@ O projeto possui duas frentes principais:
 - Permite atualizar manualmente no SAP o campo de ultima analise de credito.
 - Quando o resultado indica cliente a vista/reprovado/negado, busca e exibe telefone do cliente vindo do SAP.
 
+### Liberacao de Pedido
+
+- Fluxo dedicado para verificar se um cliente esta aprovado para liberacao de pedido.
+- Usa politica GYRA+ propria: `6a0747892fab8c8353859468`.
+- Reaproveita relatorio dentro da janela configurada de 45 dias.
+- Resolve o `CardCode` pelo CNPJ e aciona o webhook CRM B1 da Arkab.
+- Informa se o pedido foi liberado, nao liberado ou se o relatorio ainda esta em processamento.
+
 ### MARCI
 
 - Interface de chat para analise de credito.
@@ -66,6 +74,7 @@ O projeto possui duas frentes principais:
   - a vencer.
 - Atualizacao do campo `U_dtUltimaAnaliseCredito` via Service Layer.
 - Atualizacao em lote para matriz e filiais/subcodigos relacionados pela raiz do CNPJ.
+- Disparo opcional de webhook CRM B1 apos atualizacao bem-sucedida/parcial da data de ultima analise.
 - Retornos possiveis da atualizacao SAP:
   - `success`: todos os codigos atualizados;
   - `partial`: alguns codigos atualizados;
@@ -158,6 +167,7 @@ PORT=8080
 GYRA_CLIENT_ID=
 GYRA_CLIENT_SECRET=
 GYRA_POLICY_ID=
+GYRA_REPORT_REUSE_DAYS=45
 MARCI_GYRA_REUSE_DAYS=45
 
 ANTHROPIC_API_KEY=
@@ -177,6 +187,14 @@ SAP_USER=
 SAP_PASSWORD=
 
 SAP_TITULOS_PROCEDURE="SBO_GPIMPORTS"."spcGPTitulosEmAberto"
+
+CRM_B1_WEBHOOK_URL=
+CRM_B1_WEBHOOK_TOKEN=
+CRM_B1_CREDIT_ANALYSIS_OPERATION=credit_analysis_date_updated
+CRM_B1_ORDER_RELEASE_OPERATION=order_release_credit_check
+
+ORDER_RELEASE_POLICY_ID=6a0747892fab8c8353859468
+ORDER_RELEASE_SECTOR=ORDER_RELEASE
 ```
 
 Observacao: `ANTHROPIC_API_KEY` e `CLAUDE_API_KEY` sao tratados como alternativas. Basta configurar uma delas.
