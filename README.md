@@ -74,6 +74,7 @@ O projeto possui duas frentes principais:
   - vence hoje;
   - a vencer.
 - Atualizacao do campo `U_dtUltimaAnaliseCredito` via Service Layer.
+- Atualizacao do campo `U_partnerdocs` com os CPFs dos socios atuais retornados pelo GYRA+.
 - Atualizacao em lote para matriz e filiais/subcodigos relacionados pela raiz do CNPJ.
 - Disparo opcional de webhook CRM B1 apos atualizacao bem-sucedida/parcial da data de ultima analise.
 - Retornos possiveis da atualizacao SAP:
@@ -188,6 +189,7 @@ SAP_USER=
 SAP_PASSWORD=
 
 SAP_TITULOS_PROCEDURE="SBO_GPIMPORTS"."spcGPHistTitulosCliente"
+SAP_PARTNER_DOCS_FIELD=U_partnerdocs
 
 CRM_B1_WEBHOOK_URL=
 CRM_B1_WEBHOOK_TOKEN=

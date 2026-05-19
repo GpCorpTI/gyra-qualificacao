@@ -641,6 +641,9 @@ export function buildAnaliseCreditoCompletaClipboardText(report) {
         `Nome: ${partner?.name || 'N/D'}`,
         `Cpf: ${partner?.document || 'N/D'}`,
         `Sócio desde: ${partner?.formattedStartDate || partner?.startDate || 'N/D'}`,
+        'Score:',
+        'Idade:',
+        'Restrição:',
         'Vínculo com outros cnpjs:',
       ].join('\n')).join('\n\n')
     : [
@@ -648,6 +651,9 @@ export function buildAnaliseCreditoCompletaClipboardText(report) {
         'Nome:',
         'Cpf:',
         'Sócio desde:',
+        'Score:',
+        'Idade:',
+        'Restrição:',
         'Vínculo com outros cnpjs:',
       ].join('\n');
 

@@ -23,6 +23,7 @@ const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1600);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const DEFAULT_GYRA_POLICY_ID = process.env.GYRA_POLICY_ID || '67fd54db0b1b2e14e6e22e19';
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPHistTitulosCliente"';
+const SAP_PARTNER_DOCS_FIELD = process.env.SAP_PARTNER_DOCS_FIELD || 'U_partnerdocs';
 const CRM_B1_WEBHOOK_URL = process.env.CRM_B1_WEBHOOK_URL || '';
 const CRM_B1_WEBHOOK_TOKEN = process.env.CRM_B1_WEBHOOK_TOKEN || '';
 const CRM_B1_CREDIT_ANALYSIS_OPERATION = process.env.CRM_B1_CREDIT_ANALYSIS_OPERATION || 'credit_analysis_date_updated';
@@ -124,6 +125,12 @@ function formatCNPJMask(digits14) {
   const s = String(digits14 || '');
   if (s.length !== 14) return null;
   return `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12,14)}`;
+}
+
+function formatCPFMask(digits11) {
+  const s = String(digits11 || '').replace(/\D/g, '');
+  if (s.length !== 11) return String(digits11 || '').trim();
+  return `${s.slice(0,3)}.${s.slice(3,6)}.${s.slice(6,9)}-${s.slice(9,11)}`;
 }
 
 function normalizePlainText(input = '') {
@@ -404,6 +411,21 @@ function buildCurrentOwnersSummary(owners = []) {
   return owners
     .map((owner) => owner.documento ? `${owner.nome} - ${owner.documento}` : owner.nome)
     .join(' | ');
+}
+
+function extractCurrentOwnerDocuments(report, normalizedCnpj, formattedCnpj) {
+  const owners = extractCurrentOwners(report, normalizedCnpj, formattedCnpj);
+  const seen = new Set();
+  const documents = [];
+
+  owners.forEach((owner) => {
+    const digits = normalizeCNPJNumeric(owner?.documento || '');
+    if (digits.length !== 11 || seen.has(digits)) return;
+    seen.add(digits);
+    documents.push(formatCPFMask(digits));
+  });
+
+  return documents;
 }
 
 function parseCurrencyBR(value) {
@@ -1206,6 +1228,24 @@ async function getMarciGyraSummaryData({ cnpj, policyId, includeFullReport = fal
   });
 
   try {
+    const partnerDocsUpdate = await maybeUpdateSapPartnerDocsFromGyra({
+      fullReport,
+      cnpjForLookup: normalized,
+      reportId,
+    });
+    summary.sapPartnerDocsUpdateStatus = partnerDocsUpdate.status;
+    summary.sapPartnerDocsUpdateReason = partnerDocsUpdate.reason;
+    summary.sapPartnerDocsUpdateCardCodes = partnerDocsUpdate.cardCodes || [];
+    summary.sapPartnerDocsUpdatedCount = partnerDocsUpdate.updatedCount || 0;
+  } catch (err) {
+    logger.warn({ err: err.message, cnpj: summary.cnpj, reportId }, 'marci.sap.partnerdocs.update.failed');
+    summary.sapPartnerDocsUpdateStatus = 'skipped';
+    summary.sapPartnerDocsUpdateReason = 'SAP_PARTNERDOCS_UPDATE_ERROR';
+    summary.sapPartnerDocsUpdateCardCodes = [];
+    summary.sapPartnerDocsUpdatedCount = 0;
+  }
+
+  try {
     const sapUpdate = await maybeUpdateSapUltimaAnaliseCredito({
       statusFromReport: summary.status,
       cnpjForLookup: normalized,
@@ -1539,6 +1579,20 @@ async function buildOrderReleaseResult({ cnpj }) {
     await updateStoredReportSummary(reportId, fullReport);
   }
 
+  let partnerDocsUpdate = { status: 'skipped', reason: isPending ? 'GYRA_PENDING' : 'NOT_EXECUTED' };
+  if (!isPending) {
+    try {
+      partnerDocsUpdate = await maybeUpdateSapPartnerDocsFromGyra({
+        fullReport,
+        cnpjForLookup: normalized,
+        reportId,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, cnpj: formatted, reportId }, 'order.release.sap.partnerdocs.update.failed');
+      partnerDocsUpdate = { status: 'skipped', reason: 'SAP_PARTNERDOCS_UPDATE_ERROR' };
+    }
+  }
+
   const cardCode = await getCardCodeByCNPJ_HANA(normalized);
   let crmWebhook = { status: 'skipped', reason: isPending ? 'GYRA_PENDING' : 'CARD_CODE_NOT_FOUND' };
 
@@ -1562,6 +1616,7 @@ async function buildOrderReleaseResult({ cnpj }) {
     pending: isPending,
     cardCode,
     policyId: ORDER_RELEASE_POLICY_ID,
+    partnerDocsUpdate,
     crmWebhook,
   };
 }
@@ -1628,6 +1683,17 @@ async function sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate) {
   }
 }
 
+async function sapUpdatePartnerDocs(sap, cardCode, partnerDocs) {
+  const resp = await sap.patch(
+    `/BusinessPartners('${cardCode}')`,
+    { [SAP_PARTNER_DOCS_FIELD]: partnerDocs },
+    { headers: { 'If-Match': '*' } }
+  );
+  if (resp.status < 200 || resp.status >= 300) {
+    throw new Error(`SAP PATCH ${SAP_PARTNER_DOCS_FIELD} failed (${resp.status}): ${JSON.stringify(resp.data)}`);
+  }
+}
+
 async function sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes = [], isoDate) {
   const uniqueCardCodes = [...new Set(cardCodes.filter(Boolean))];
   const updated = [];
@@ -1636,6 +1702,23 @@ async function sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes = [], isoDat
   for (const cardCode of uniqueCardCodes) {
     try {
       await sapUpdateUltimaAnaliseCredito(sap, cardCode, isoDate);
+      updated.push(cardCode);
+    } catch (err) {
+      failed.push({ cardCode, error: err.message });
+    }
+  }
+
+  return { updated, failed };
+}
+
+async function sapUpdatePartnerDocsForCodes(sap, cardCodes = [], partnerDocs) {
+  const uniqueCardCodes = [...new Set(cardCodes.filter(Boolean))];
+  const updated = [];
+  const failed = [];
+
+  for (const cardCode of uniqueCardCodes) {
+    try {
+      await sapUpdatePartnerDocs(sap, cardCode, partnerDocs);
       updated.push(cardCode);
     } catch (err) {
       failed.push({ cardCode, error: err.message });
@@ -1703,6 +1786,72 @@ async function notifyCrmB1CreditAnalysisUpdate({ key, cardCodes = [] }) {
     operation: CRM_B1_CREDIT_ANALYSIS_OPERATION,
     additionalInformation: relatedCodes.join(','),
   });
+}
+
+async function maybeUpdateSapPartnerDocsFromGyra({ fullReport, cnpjForLookup = '', reportId = null }) {
+  let resolvedCnpj = String(cnpjForLookup || '').trim();
+
+  if (!resolvedCnpj && reportId) {
+    const [cnpjRows] = await pool.execute(
+      'SELECT cnpj, normalized_cnpj, formatted_cnpj FROM cnpj_reports WHERE report_id = ? LIMIT 1',
+      [reportId]
+    );
+    resolvedCnpj = String(
+      cnpjRows?.[0]?.normalized_cnpj ||
+      cnpjRows?.[0]?.cnpj ||
+      cnpjRows?.[0]?.formatted_cnpj ||
+      ''
+    ).trim();
+  }
+
+  if (!resolvedCnpj) {
+    return { status: 'skipped', reason: 'NO_CNPJ_IN_DB', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], partnerDocs: '' };
+  }
+
+  const normalized = normalizeCNPJNumeric(resolvedCnpj);
+  const formatted = formatCNPJMask(normalized);
+  const partnerDocuments = extractCurrentOwnerDocuments(fullReport, normalized, formatted);
+
+  if (!partnerDocuments.length) {
+    return { status: 'skipped', reason: 'NO_CURRENT_OWNER_DOCUMENTS', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], partnerDocs: '' };
+  }
+
+  const cardCodes = await getCardCodesByCNPJGroup_HANA(resolvedCnpj);
+  const cardCode = cardCodes[0] || null;
+
+  if (!cardCodes.length) {
+    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, cardCodes: [], updatedCount: 0, failed: [], partnerDocs: partnerDocuments.join(',') };
+  }
+
+  const sap = await sapCreateSession();
+  const partnerDocs = partnerDocuments.join(',');
+  const updateResult = await sapUpdatePartnerDocsForCodes(sap, cardCodes, partnerDocs);
+  const status = updateResult.failed.length
+    ? updateResult.updated.length
+      ? 'partial'
+      : 'failed'
+    : 'success';
+
+  logger.info(
+    {
+      cnpj: resolvedCnpj,
+      field: SAP_PARTNER_DOCS_FIELD,
+      updated: updateResult.updated.length,
+      total: cardCodes.length,
+    },
+    'sap.partnerdocs.updated'
+  );
+
+  return {
+    status,
+    reason: status === 'success' ? null : 'SAP_PARTNERDOCS_UPDATE_FAILED',
+    cardCode,
+    cardCodes,
+    updatedCardCodes: updateResult.updated,
+    updatedCount: updateResult.updated.length,
+    failed: updateResult.failed,
+    partnerDocs,
+  };
 }
 
 async function maybeUpdateSapUltimaAnaliseCredito({ statusFromReport, cnpjForLookup = '', reportId = null, force = false }) {
@@ -2400,7 +2549,28 @@ app.get('/api/report/:id', async (req, res) => {
         ]
       );
     }
-    // 4) Update SAP status if Approved
+    // 4) Update SAP partner CPF field from current Gyra owners.
+    try {
+      const partnerDocsUpdate = await maybeUpdateSapPartnerDocsFromGyra({
+        fullReport,
+        cnpjForLookup: reportCnpjForLookup,
+        reportId,
+      });
+      res.set('X-SAP-PartnerDocs-Update', partnerDocsUpdate.status);
+      if (partnerDocsUpdate.reason) {
+        res.set('X-SAP-PartnerDocs-Reason', partnerDocsUpdate.reason);
+      }
+      if (partnerDocsUpdate.cardCodes?.length) {
+        res.set('X-SAP-PartnerDocs-CardCodes', partnerDocsUpdate.cardCodes.join(','));
+        res.set('X-SAP-PartnerDocs-Updated-Count', String(partnerDocsUpdate.updatedCount || 0));
+      }
+    } catch (e) {
+      console.error(`❌ SAP ${SAP_PARTNER_DOCS_FIELD} update failed:`, e.message);
+      res.set('X-SAP-PartnerDocs-Update', 'skipped');
+      res.set('X-SAP-PartnerDocs-Reason', 'SAP_PARTNERDOCS_UPDATE_ERROR');
+    }
+
+    // 5) Update SAP status if Approved
     const statusFromReport = fullReport?.status?.value || extractReportSummary(fullReport).statusValue;
     try {
       const sapUpdate = await maybeUpdateSapUltimaAnaliseCredito({
@@ -2433,7 +2603,7 @@ app.get('/api/report/:id', async (req, res) => {
       }
     }
       
-    // 5) Return Gyra data + our DB timestamp
+    // 6) Return Gyra data + our DB timestamp
     const dur = Date.now() - start;
     req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     res.json({...fullReport, createdAt, clientPhone });
