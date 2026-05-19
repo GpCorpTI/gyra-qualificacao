@@ -28,8 +28,6 @@
       <div v-if="companyName" class="company-header">
         <h3 class="company-name" :title="companyName">{{ companyName }}</h3>
         <p v-if="consultedCnpj" class="company-cnpj">CNPJ: {{ consultedCnpj }}</p>
-        <p v-if="estimatedBilling" class="company-cnpj">Faturamento estimado: {{ estimatedBilling }}</p>
-        <p v-if="clientPhone" class="company-cnpj">Telefone: {{ clientPhone }}</p>
       </div>
 
       <div class="btn-group">

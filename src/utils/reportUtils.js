@@ -228,13 +228,38 @@ function extractChangesSummary(report) {
     ].filter(Boolean).join(' '));
   }
 
+  const historyDataDetails = findNestedValuesByKeys(report, ['historyData'])
+    .find((value) => value && typeof value === 'object' && value.company)?.company || {};
+
+  const latestHistoryName = (historyDataDetails.historyNames || [])
+    .slice()
+    .sort((a, b) => String(b?.changeDate || '').localeCompare(String(a?.changeDate || '')))[0];
+  const latestMainActivity = (historyDataDetails.historyActivities || [])
+    .filter((activity) => activity?.isMainEconomicActivity)
+    .slice()
+    .sort((a, b) => String(b?.changeDate || '').localeCompare(String(a?.changeDate || '')))[0];
+  const latestSecondaryActivities = (historyDataDetails.historyActivities || [])
+    .filter((activity) => !activity?.isMainEconomicActivity)
+    .slice(0, 2);
+
   const changeLabels = [
-    ['basicDataChanges', 'Dados cadastrais'],
-    ['addressesChanges', 'Endereço'],
-    ['economicGroupChanges', 'Grupo econômico'],
+    [
+      'basicDataChanges',
+      'Dados cadastrais',
+      () => [
+        latestHistoryName?.officialName ? `Razão social: ${latestHistoryName.officialName}` : '',
+        latestHistoryName?.tradeName ? `Fantasia: ${latestHistoryName.tradeName}` : '',
+        latestMainActivity?.code ? `CNAE principal: ${latestMainActivity.code} - ${latestMainActivity.activity || 'N/D'}` : '',
+        latestSecondaryActivities.length
+          ? `CNAEs secundários: ${latestSecondaryActivities.map((activity) => `${activity.code} - ${activity.activity || 'N/D'}`).join('; ')}`
+          : '',
+      ].filter(Boolean).join('; '),
+    ],
+    ['addressesChanges', 'Endereço', () => ''],
+    ['economicGroupChanges', 'Grupo econômico', () => ''],
   ];
 
-  for (const [key, label] of changeLabels) {
+  for (const [key, label, getDetails] of changeLabels) {
     const changes = findNestedValuesByKeys(report, [key])
       .flatMap((value) => Array.isArray(value) ? value : [])
       .filter(Boolean);
@@ -245,7 +270,8 @@ function extractChangesSummary(report) {
         .filter(Boolean)
         .sort()
         .pop();
-      parts.push(`${label}: ${changes.length}${latest ? ` - última em ${formatShortDate(latest)}` : ''}`);
+      const details = getDetails?.();
+      parts.push(`${label}: ${changes.length}${latest ? ` - última em ${formatShortDate(latest)}` : ''}${details ? ` (${details})` : ''}`);
     }
   }
 
