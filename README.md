@@ -200,6 +200,8 @@ ORDER_RELEASE_SECTOR=ORDER_RELEASE
 
 Observacao: `ANTHROPIC_API_KEY` e `CLAUDE_API_KEY` sao tratados como alternativas. Basta configurar uma delas.
 
+Observacao CRM B1: `CRM_B1_WEBHOOK_URL` pode ser informada completa, inclusive com `token` na query string. Nesse formato, `CRM_B1_WEBHOOK_TOKEN` e opcional.
+
 ## Script SAP Para Chamar O Motor
 
 O script `backend/scripts/run-motor-from-sap-query.mjs` consulta CNPJs no SAP HANA e chama a API local do Motor para cada CNPJ retornado.

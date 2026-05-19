@@ -1649,21 +1649,22 @@ async function notifyCrmB1Webhook({ key, operation, additionalInformation = '' }
   const normalizedKey = String(key || '').trim();
   const normalizedOperation = String(operation || '').trim();
 
-  if (!CRM_B1_WEBHOOK_URL || !CRM_B1_WEBHOOK_TOKEN || !normalizedKey || !normalizedOperation) {
+  if (!CRM_B1_WEBHOOK_URL || !normalizedKey || !normalizedOperation) {
     return { status: 'skipped', reason: 'CRM_B1_WEBHOOK_NOT_CONFIGURED' };
   }
 
   try {
-    const response = await axios.post(CRM_B1_WEBHOOK_URL, null, {
-      params: {
-        objtype: '2',
-        key: normalizedKey,
-        operation: normalizedOperation,
-        additional_information: String(additionalInformation || ''),
-        token: CRM_B1_WEBHOOK_TOKEN,
-      },
-      timeout: 30000,
-    });
+    const url = new URL(CRM_B1_WEBHOOK_URL);
+    url.searchParams.set('objtype', '2');
+    url.searchParams.set('key', normalizedKey);
+    url.searchParams.set('operation', normalizedOperation);
+    url.searchParams.set('additional_information', String(additionalInformation || ''));
+
+    if (CRM_B1_WEBHOOK_TOKEN && !url.searchParams.get('token')) {
+      url.searchParams.set('token', CRM_B1_WEBHOOK_TOKEN);
+    }
+
+    const response = await axios.post(url.toString(), null, { timeout: 30000 });
 
     return {
       status: 'success',
