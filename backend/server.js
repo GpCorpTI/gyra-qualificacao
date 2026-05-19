@@ -21,13 +21,16 @@ const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1600);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
-const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPTitulosEmAberto"';
+const DEFAULT_GYRA_POLICY_ID = process.env.GYRA_POLICY_ID || '67fd54db0b1b2e14e6e22e19';
+const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPHistTitulosCliente"';
 const CRM_B1_WEBHOOK_URL = process.env.CRM_B1_WEBHOOK_URL || '';
 const CRM_B1_WEBHOOK_TOKEN = process.env.CRM_B1_WEBHOOK_TOKEN || '';
 const CRM_B1_CREDIT_ANALYSIS_OPERATION = process.env.CRM_B1_CREDIT_ANALYSIS_OPERATION || 'credit_analysis_date_updated';
 const ORDER_RELEASE_POLICY_ID = process.env.ORDER_RELEASE_POLICY_ID || '6a0747892fab8c8353859468';
 const ORDER_RELEASE_SECTOR = process.env.ORDER_RELEASE_SECTOR || 'ORDER_RELEASE';
 const CRM_B1_ORDER_RELEASE_OPERATION = process.env.CRM_B1_ORDER_RELEASE_OPERATION || 'order_release_credit_check';
+const MARCI_REPORT_SECTOR = 'MARCI';
+let hasCnpjReportsPolicyId = false;
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -202,6 +205,82 @@ async function execRows(sql, params = []) {
   if (res && Array.isArray(res.rows)) return res.rows;
   // already rows array
   return res;
+}
+
+async function ensureCnpjReportsPolicyIdColumn() {
+  try {
+    const columns = await execRows("SHOW COLUMNS FROM cnpj_reports LIKE 'policy_id'");
+
+    if (!columns.length) {
+      await pool.execute('ALTER TABLE cnpj_reports ADD COLUMN policy_id VARCHAR(64) NULL AFTER report_id');
+      logger.info('cnpj_reports.policy_id column created');
+    }
+
+    hasCnpjReportsPolicyId = true;
+
+    await pool.execute(
+      `UPDATE cnpj_reports
+          SET policy_id = CASE
+            WHEN sector = ? THEN ?
+            ELSE ?
+          END
+        WHERE policy_id IS NULL`,
+      [ORDER_RELEASE_SECTOR, ORDER_RELEASE_POLICY_ID, DEFAULT_GYRA_POLICY_ID]
+    );
+
+    const indexes = await execRows("SHOW INDEX FROM cnpj_reports WHERE Key_name = 'idx_cnpj_policy_sector_created'");
+
+    if (!indexes.length) {
+      await pool.execute(
+        `ALTER TABLE cnpj_reports
+           ADD INDEX idx_cnpj_policy_sector_created
+           (normalized_cnpj, policy_id, sector, created_at)`
+      );
+      logger.info('cnpj_reports context lookup index created');
+    }
+  } catch (err) {
+    hasCnpjReportsPolicyId = false;
+    logger.warn(
+      { err: err.message },
+      'cnpj_reports.policy_id unavailable; report reuse will fall back to sector-only filtering'
+    );
+  }
+}
+
+function buildRecentReportLookupSql({ includePolicy = hasCnpjReportsPolicyId } = {}) {
+  const policyFilter = includePolicy ? 'AND policy_id = ?' : '';
+  return `
+    SELECT id, report_id, formatted_cnpj, created_at
+      FROM cnpj_reports
+     WHERE normalized_cnpj = ?
+       ${policyFilter}
+       AND sector <=> ?
+       AND created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
+     ORDER BY created_at DESC
+     LIMIT 1`;
+}
+
+function buildRecentReportLookupParams({ normalizedCnpj, policyId, sector }) {
+  return hasCnpjReportsPolicyId
+    ? [normalizedCnpj, policyId, sector || null]
+    : [normalizedCnpj, sector || null];
+}
+
+async function insertCnpjReport({ cnpj, normalizedCnpj, formattedCnpj, reportId, policyId, sector }) {
+  if (hasCnpjReportsPolicyId) {
+    await pool.execute(
+      `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, policy_id, sector, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [cnpj, normalizedCnpj, formattedCnpj, reportId, policyId, sector || null]
+    );
+    return;
+  }
+
+  await pool.execute(
+    `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
+     VALUES (?, ?, ?, ?, ?, NOW())`,
+    [cnpj, normalizedCnpj, formattedCnpj, reportId, sector || null]
+  );
 }
 
 function findSection(report, typeValue) {
@@ -1088,13 +1167,12 @@ async function getMarciGyraSummaryData({ cnpj, policyId, includeFullReport = fal
   const token = await requestGyraToken();
 
   const existing = await execRows(
-    `SELECT report_id, created_at, formatted_cnpj
-       FROM cnpj_reports
-      WHERE normalized_cnpj = ?
-        AND created_at > NOW() - INTERVAL ${MARCI_GYRA_REUSE_DAYS} DAY
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [normalized]
+    buildRecentReportLookupSql(),
+    buildRecentReportLookupParams({
+      normalizedCnpj: normalized,
+      policyId,
+      sector: MARCI_REPORT_SECTOR,
+    })
   );
 
   let reused = false;
@@ -1107,11 +1185,14 @@ async function getMarciGyraSummaryData({ cnpj, policyId, includeFullReport = fal
     createdAt = existing[0].created_at;
   } else {
     reportId = await createGyraReport(token, normalized, policyId);
-    await pool.execute(
-      `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
-       VALUES (?, ?, ?, ?, ?, NOW())`,
-      [cnpj, normalized, formatted, reportId, 'MARCI']
-    );
+    await insertCnpjReport({
+      cnpj,
+      normalizedCnpj: normalized,
+      formattedCnpj: formatted,
+      reportId,
+      policyId,
+      sector: MARCI_REPORT_SECTOR,
+    });
     createdAt = new Date().toISOString();
   }
 
@@ -1242,10 +1323,10 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
   return buildMarciMessage({
     intent: 'sap_overview',
     answer: procedureRows.length
-      ? `Consegui resolver o cliente no SAP pelo CardCode ${cardCode} e executar a procedure spcGPTitulosEmAberto. Trouxe abaixo um recorte inicial do retorno para este cliente.`
+      ? `Consegui resolver o cliente no SAP pelo CardCode ${cardCode} e executar a procedure spcGPHistTitulosCliente. Trouxe abaixo um recorte inicial do retorno para este cliente.`
       : procedureError
-        ? `Consegui resolver o cliente no SAP pelo CardCode ${cardCode}, mas nao consegui executar a procedure spcGPTitulosEmAberto nesta tentativa.`
-        : `Consegui resolver o cliente no SAP pelo CardCode ${cardCode}, mas a procedure spcGPTitulosEmAberto nao retornou linhas para este cliente.`,
+        ? `Consegui resolver o cliente no SAP pelo CardCode ${cardCode}, mas nao consegui executar a procedure spcGPHistTitulosCliente nesta tentativa.`
+        : `Consegui resolver o cliente no SAP pelo CardCode ${cardCode}, mas a procedure spcGPHistTitulosCliente nao retornou linhas para este cliente.`,
     sources: ['SAP HANA'],
     cards: [
       buildMarciCard(
@@ -1300,7 +1381,7 @@ async function buildMarciSapOverviewResponse({ cnpj }) {
         }
       ),
       buildMarciCard(
-        'spcGPTitulosEmAberto',
+        'spcGPHistTitulosCliente',
         procedureRows.length ? `${procedureRows.length} linha(s) retornada(s)` : 'Sem linhas retornadas',
         procedureError
           ? `Falha na execucao: ${procedureError.message}`
@@ -1381,14 +1462,8 @@ function buildMarciUnknownResponse() {
 async function getOrCreateGyraReportForSector({ normalizedCnpj, formattedCnpj, policyId, sector }) {
   const token = await requestGyraToken();
   const existing = await execRows(
-    `SELECT report_id, created_at, formatted_cnpj
-       FROM cnpj_reports
-      WHERE normalized_cnpj = ?
-        AND sector = ?
-        AND created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [normalizedCnpj, sector]
+    buildRecentReportLookupSql(),
+    buildRecentReportLookupParams({ normalizedCnpj, policyId, sector })
   );
 
   if (existing.length) {
@@ -1401,11 +1476,14 @@ async function getOrCreateGyraReportForSector({ normalizedCnpj, formattedCnpj, p
   }
 
   const reportId = await createGyraReport(token, normalizedCnpj, policyId);
-  await pool.execute(
-    `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
-     VALUES (?, ?, ?, ?, ?, NOW())`,
-    [formattedCnpj || normalizedCnpj, normalizedCnpj, formattedCnpj, reportId, sector]
-  );
+  await insertCnpjReport({
+    cnpj: formattedCnpj || normalizedCnpj,
+    normalizedCnpj,
+    formattedCnpj,
+    reportId,
+    policyId,
+    sector,
+  });
 
   return {
     token,
@@ -2122,22 +2200,23 @@ app.post('/api/report', async (req, res) => {
   let reused = false;
   try {
     const { token, cnpj, policyId, sector } = req.body;
+    const resolvedPolicyId = policyId || DEFAULT_GYRA_POLICY_ID;
+    const resolvedSector = sector || null;
 
     const normalized = normalizeCNPJNumeric(cnpj);
     if (!isValidCNPJ(normalized)) {
       return res.status(400).json({ error: 'CNPJ inválido' });
     }
     const formatted = formatCNPJMask(normalized);
-    // 1) Verifica se já existe report dentro da janela configurada para este CNPJ normalizado
-  const exists = await execRows(
-    `SELECT id, report_id, formatted_cnpj, created_at
-      FROM cnpj_reports
-      WHERE normalized_cnpj = ?
-        AND created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [normalized]
-  );
+    // 1) Verifica se ja existe report recente para o mesmo CNPJ, politica e contexto.
+    const exists = await execRows(
+      buildRecentReportLookupSql(),
+      buildRecentReportLookupParams({
+        normalizedCnpj: normalized,
+        policyId: resolvedPolicyId,
+        sector: resolvedSector,
+      })
+    );
 
     if (exists.length) {
       reused = true;
@@ -2153,19 +2232,22 @@ app.post('/api/report', async (req, res) => {
     // 2) Cria novo report no Gyra+
     const created = await axios.post(
       'https://gyra-core.gyramais.com.br/report',
-      { document: normalized, policyId },
+      { document: normalized, policyId: resolvedPolicyId },
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const reportId = created.data?.id || created.data?.reportId;
 
-    // 3) Insere na base (sector só no insert)
-    await pool.execute(
-      `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
-       VALUES (?, ?, ?, ?, ?, NOW())`,
-      [cnpj, normalized, formatted, reportId, sector || null]
-    );
+    // 3) Insere na base com a politica/contexto usados na consulta.
+    await insertCnpjReport({
+      cnpj,
+      normalizedCnpj: normalized,
+      formattedCnpj: formatted,
+      reportId,
+      policyId: resolvedPolicyId,
+      sector: resolvedSector,
+    });
     const dur = Date.now() - start;
-    req.log.info({ cnpj, sector, reportId, reused, ms: dur }, 'report.create');
+    req.log.info({ cnpj, sector: resolvedSector, policyId: resolvedPolicyId, reportId, reused, ms: dur }, 'report.create');
     res.json({ id: reportId, reused: false, cnpj: normalized, formatted });
 
   } catch (err) {
@@ -2423,6 +2505,7 @@ app.post('/api/report/:id/update-sap-manual', async (req, res) => {
 // Lista dentro da janela configurada
 app.get('/api/reports', async (req, res) => {
   try {
+    const policyIdSelect = hasCnpjReportsPolicyId ? 'policy_id,' : 'NULL AS policy_id,';
     const rows = await execRows(
       `SELECT
          id,
@@ -2430,6 +2513,7 @@ app.get('/api/reports', async (req, res) => {
          normalized_cnpj,
          formatted_cnpj,
          report_id,
+         ${policyIdSelect}
          sector,
          business_name,
          status_value,
@@ -2450,8 +2534,9 @@ app.get('/api/reports', async (req, res) => {
 // Export XLSX dentro da janela configurada
 app.get('/api/reports.xlsx', async (req, res) => {
   try {
+    const policyIdSelect = hasCnpjReportsPolicyId ? 'policy_id,' : 'NULL AS policy_id,';
     const [rows] = await pool.execute(
-      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, business_name, status_value, rules, risks, created_at
+      `SELECT id, cnpj, normalized_cnpj, formatted_cnpj, report_id, ${policyIdSelect} sector, business_name, status_value, rules, risks, created_at
          FROM cnpj_reports
         WHERE created_at > NOW() - INTERVAL ${GYRA_REPORT_REUSE_DAYS} DAY
         ORDER BY created_at DESC`
@@ -2463,6 +2548,7 @@ app.get('/api/reports.xlsx', async (req, res) => {
       CNPJ_NORMALIZADO: r.normalized_cnpj,
       CNPJ_FORMATADO: r.formatted_cnpj, // ✅ incluído
       REPORT_ID: r.report_id,
+      POLITICA: r.policy_id,
       SETOR: r.sector,
       NOME_EMPRESA: r.business_name,
       STATUS_GERAL: r.status_value,
@@ -2526,6 +2612,15 @@ app.get('/motorcredito/*', (req, res) => {
 });
 
 
-app.listen(PORT, () => {
-  console.log(`✅ Backend API ready at http://localhost:${PORT}`);
+async function startServer() {
+  await ensureCnpjReportsPolicyIdColumn();
+
+  app.listen(PORT, () => {
+    console.log(`✅ Backend API ready at http://localhost:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  logger.error({ err: err.message }, 'backend.start.fail');
+  process.exit(1);
 });

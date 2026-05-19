@@ -18,6 +18,7 @@ O projeto possui duas frentes principais:
 
 - Consulta CNPJ no GYRA+.
 - Reaproveita relatorios ja criados dentro da janela configurada.
+- O reaproveitamento considera CNPJ, politica (`policy_id`) e contexto (`sector`) para evitar misturar Motor, MARCI e Liberacao de Pedido.
 - Exibe status geral, riscos e regras de politica acionadas.
 - Gera texto de resumo para copia, incluindo a estrutura de "Cadastro Rapido cliente a vista".
 - Gera payload para PDF/ODG quando aplicavel.
@@ -60,7 +61,7 @@ O projeto possui duas frentes principais:
 - Consulta de titulos em aberto pela procedure:
 
 ```text
-"SBO_GPIMPORTS"."spcGPTitulosEmAberto"
+"SBO_GPIMPORTS"."spcGPHistTitulosCliente"
 ```
 
 - Exibicao de ate 5 linhas da procedure no MARCI.
@@ -186,7 +187,7 @@ COMPANYDB_SAP=
 SAP_USER=
 SAP_PASSWORD=
 
-SAP_TITULOS_PROCEDURE="SBO_GPIMPORTS"."spcGPTitulosEmAberto"
+SAP_TITULOS_PROCEDURE="SBO_GPIMPORTS"."spcGPHistTitulosCliente"
 
 CRM_B1_WEBHOOK_URL=
 CRM_B1_WEBHOOK_TOKEN=
@@ -198,6 +199,36 @@ ORDER_RELEASE_SECTOR=ORDER_RELEASE
 ```
 
 Observacao: `ANTHROPIC_API_KEY` e `CLAUDE_API_KEY` sao tratados como alternativas. Basta configurar uma delas.
+
+## Script SAP Para Chamar O Motor
+
+O script `backend/scripts/run-motor-from-sap-query.mjs` consulta CNPJs no SAP HANA e chama a API local do Motor para cada CNPJ retornado.
+
+Variaveis adicionais:
+
+```env
+MOTOR_BASE_URL=http://localhost:8080
+MOTOR_SCRIPT_MODE=credit
+MOTOR_POLICY_ID=67fd54db0b1b2e14e6e22e19
+MOTOR_SECTOR=CRDT
+MOTOR_REQUEST_DELAY_MS=500
+MOTOR_MAX_ROWS=0
+CNPJ_SOURCE_SQL=SELECT "TaxId0" AS "CNPJ" FROM CRD7 WHERE "TaxId0" IS NOT NULL
+CNPJ_COLUMN=CNPJ
+```
+
+Modos disponiveis:
+
+- `MOTOR_SCRIPT_MODE=credit`: chama `/api/token` e depois `/api/report`, usando `MOTOR_POLICY_ID`.
+- `MOTOR_SCRIPT_MODE=order-release`: chama `/api/order-release`, usando a politica fixa de liberacao de pedido.
+
+Executar:
+
+```powershell
+cd backend
+node scripts/run-motor-from-sap-query.mjs --dry-run
+node scripts/run-motor-from-sap-query.mjs
+```
 
 ## Deploy / VM
 
