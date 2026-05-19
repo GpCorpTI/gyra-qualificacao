@@ -133,6 +133,19 @@ function formatCPFMask(digits11) {
   return `${s.slice(0,3)}.${s.slice(3,6)}.${s.slice(6,9)}-${s.slice(9,11)}`;
 }
 
+function isValidCPFDocument(cpf) {
+  const s = String(cpf || '').replace(/\D/g, '');
+  return s.length === 11 && !/^(\d)\1{10}$/.test(s);
+}
+
+function quoteSapIdentifier(identifier) {
+  const clean = String(identifier || '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(clean)) {
+    throw new Error(`Identificador SAP invalido: ${identifier}`);
+  }
+  return `"${clean}"`;
+}
+
 function normalizePlainText(input = '') {
   return String(input)
     .normalize('NFD')
@@ -2343,6 +2356,57 @@ async function getClientPhoneByCNPJ_HANA(cnpjInput) {
   const row = await hanaQueryOne(sql, [formatted, digits, formatted]);
   return pickSapPhone(row);
 }
+
+async function getBusinessPartnersByPartnerCpf_HANA(cpfInput) {
+  const digits = normalizeCNPJNumeric(cpfInput || '');
+  if (!isValidCPFDocument(digits)) return [];
+
+  const partnerDocsField = quoteSapIdentifier(SAP_PARTNER_DOCS_FIELD);
+  const normalizePartnerDocsSql = `
+    REPLACE(
+      REPLACE(
+        REPLACE(
+          REPLACE(
+            REPLACE(IFNULL(T1.${partnerDocsField}, ''), '.', ''),
+            '-',
+            ''
+          ),
+          '/',
+          ''
+        ),
+        ' ',
+        ''
+      ),
+      ',',
+      ''
+    )
+  `;
+  const normalizeTaxIdSql = `REPLACE(REPLACE(REPLACE(IFNULL(T0."TaxId0", ''), '.', ''), '/', ''), '-', '')`;
+  const sql = `
+    SELECT DISTINCT
+      T1."CardCode",
+      T1."CardName",
+      T1."CardFName",
+      T0."TaxId0",
+      ${partnerDocsField} AS "PartnerDocs"
+    FROM OCRD T1
+    LEFT JOIN CRD7 T0 ON T0."CardCode" = T1."CardCode"
+    WHERE ${normalizePartnerDocsSql} LIKE ?
+    ORDER BY T1."CardCode"
+  `;
+
+  const rows = await hanaQueryAll(sql, [`%${digits}%`]);
+  return rows.map((row) => {
+    const taxDigits = normalizeCNPJNumeric(row?.TaxId0 || '');
+    return {
+      cardCode: row?.CardCode || '',
+      name: row?.CardName || '',
+      fantasyName: row?.CardFName || '',
+      cnpj: taxDigits.length === 14 ? formatCNPJMask(taxDigits) : (row?.TaxId0 || ''),
+      partnerDocs: row?.PartnerDocs || '',
+    };
+  });
+}
 // -------------------------
 // Rotas
 // -------------------------
@@ -2513,6 +2577,41 @@ app.post('/api/order-release', async (req, res) => {
     const dur = Date.now() - start;
     req.log.error({ err: err.message, ms: dur }, 'order.release.check.fail');
     res.status(err.statusCode || 500).json({ error: err.message || 'Erro ao consultar liberacao de pedido' });
+  }
+});
+
+app.post('/api/partner-docs/search', async (req, res) => {
+  const start = Date.now();
+
+  try {
+    const { cpf } = req.body || {};
+    const normalizedCpf = normalizeCNPJNumeric(cpf || '');
+
+    if (!isValidCPFDocument(normalizedCpf)) {
+      return res.status(400).json({ error: 'CPF invalido' });
+    }
+
+    const rows = await getBusinessPartnersByPartnerCpf_HANA(normalizedCpf);
+    const dur = Date.now() - start;
+
+    req.log.info(
+      {
+        cpf: formatCPFMask(normalizedCpf),
+        count: rows.length,
+        ms: dur,
+      },
+      'sap.partnerdocs.search'
+    );
+
+    res.json({
+      cpf: formatCPFMask(normalizedCpf),
+      count: rows.length,
+      results: rows,
+    });
+  } catch (err) {
+    const dur = Date.now() - start;
+    req.log.error({ err: err.message, ms: dur }, 'sap.partnerdocs.search.fail');
+    res.status(500).json({ error: err.message || 'Erro ao consultar vinculos do CPF no SAP' });
   }
 });
 

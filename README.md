@@ -6,6 +6,7 @@ O projeto possui duas frentes principais:
 
 - **Motor de Credito / Qualificar Cliente**: consulta CNPJ no GYRA+, aplica a leitura das politicas de credito e gera um resumo operacional para o time.
 - **MARCI**: assistente de decisao de credito que recebe perguntas por chat, consulta GYRA+ e SAP quando ha CNPJ, e retorna uma analise integrada com cards objetivos.
+- **Vinculos por CPF**: consulta o SAP pelo campo `U_partnerdocs` para localizar CNPJs vinculados a um CPF de socio.
 
 ## Funcionalidades
 
@@ -32,6 +33,13 @@ O projeto possui duas frentes principais:
 - Reaproveita relatorio dentro da janela configurada de 45 dias.
 - Resolve o `CardCode` pelo CNPJ e aciona o webhook CRM B1 da Arkab.
 - Informa se o pedido foi liberado, nao liberado ou se o relatorio ainda esta em processamento.
+
+### Vinculos por CPF
+
+- Permite pesquisar um CPF de socio.
+- Consulta o campo SAP `U_partnerdocs`.
+- Retorna `CardCode`, nome, fantasia, CNPJ e o conteudo encontrado no campo de documentos dos socios.
+- Usa a mesma protecao por PIN do Motor de Credito.
 
 ### MARCI
 

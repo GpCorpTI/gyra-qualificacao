@@ -30,6 +30,16 @@
           </div>
         </router-link>
 
+        <router-link class="launch-card partner-card" :to="{ name: 'vinculosCpf' }">
+          <span class="launch-icon">🔎</span>
+          <div class="launch-copy">
+            <h2>VÍNCULOS POR CPF</h2>
+            <p>
+              Pesquise o CPF de um sócio e encontre os CNPJs vinculados pelo campo U_partnerdocs no SAP.
+            </p>
+          </div>
+        </router-link>
+
         <router-link class="launch-card marci-card" :to="{ name: 'pinMarci' }">
           <span class="launch-icon">🚘</span>
           <div class="launch-copy">
@@ -130,8 +140,16 @@ h1 {
   background-color: rgba(32, 155, 103, 0.35);
 }
 
+.partner-card {
+  background-color: rgba(142, 202, 230, 0.27);
+}
+
 .order-card:hover {
   background-color: #2f6f4f;
+}
+
+.partner-card:hover {
+  background-color: #2d5f73;
 }
 
 .marci-card:hover {
