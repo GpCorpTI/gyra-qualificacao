@@ -1731,8 +1731,17 @@ async function sapUpdatePartnerDocsForCodes(sap, cardCodes = [], partnerDocs) {
 async function notifyCrmB1Webhook({ key, operation, additionalInformation = '' }) {
   const normalizedKey = String(key || '').trim();
   const normalizedOperation = String(operation || '').trim();
+  const normalizedAdditionalInformation = String(additionalInformation || '');
 
   if (!CRM_B1_WEBHOOK_URL || !normalizedKey || !normalizedOperation) {
+    logger.info(
+      {
+        configured: Boolean(CRM_B1_WEBHOOK_URL),
+        key: normalizedKey || null,
+        operation: normalizedOperation || null,
+      },
+      'crm.b1.webhook.skipped'
+    );
     return { status: 'skipped', reason: 'CRM_B1_WEBHOOK_NOT_CONFIGURED' };
   }
 
@@ -1741,18 +1750,34 @@ async function notifyCrmB1Webhook({ key, operation, additionalInformation = '' }
     url.searchParams.set('objtype', '2');
     url.searchParams.set('key', normalizedKey);
     url.searchParams.set('operation', normalizedOperation);
-    url.searchParams.set('additional_information', String(additionalInformation || ''));
+    url.searchParams.set('additional_information', normalizedAdditionalInformation);
 
     if (CRM_B1_WEBHOOK_TOKEN && !url.searchParams.get('token')) {
       url.searchParams.set('token', CRM_B1_WEBHOOK_TOKEN);
     }
 
     const response = await axios.post(url.toString(), null, { timeout: 30000 });
+    const redactedUrl = new URL(url.toString());
+    if (redactedUrl.searchParams.has('token')) {
+      redactedUrl.searchParams.set('token', '[REDACTED]');
+    }
+
+    logger.info(
+      {
+        statusCode: response.status,
+        key: normalizedKey,
+        operation: normalizedOperation,
+        additionalInformation: normalizedAdditionalInformation,
+        url: redactedUrl.toString(),
+      },
+      'crm.b1.webhook.success'
+    );
 
     return {
       status: 'success',
       statusCode: response.status,
       operation: normalizedOperation,
+      additionalInformation: normalizedAdditionalInformation,
     };
   } catch (err) {
     logger.warn(
@@ -1761,6 +1786,8 @@ async function notifyCrmB1Webhook({ key, operation, additionalInformation = '' }
         statusCode: err.response?.status,
         data: err.response?.data,
         key: normalizedKey,
+        operation: normalizedOperation,
+        additionalInformation: normalizedAdditionalInformation,
       },
       'crm.b1.webhook.failed'
     );
