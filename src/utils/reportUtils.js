@@ -164,6 +164,25 @@ function hasRestrictionFromSummary(report) {
   return [pefin, refin, protestos].some((item) => parseCurrencyNumber(item?.value) > 0);
 }
 
+function extractRestrictionsSummary(report) {
+  const items = [
+    ['Pefin', findSummaryItemByTitles(report, ['Pefin'])],
+    ['Refin', findSummaryItemByTitles(report, ['Refin'])],
+    ['Protestos', findSummaryItemByTitles(report, ['Protestos'])],
+  ];
+
+  const restrictions = items
+    .filter(([, item]) => parseCurrencyNumber(item?.value) > 0 || parseCurrencyNumber(item?.subValue) > 0)
+    .map(([label, item]) => [
+      `${label}:`,
+      item?.value,
+      item?.subValue,
+      item?.resolution,
+    ].filter(Boolean).join(' '));
+
+  return restrictions.length ? restrictions.join(' | ') : 'Não identificadas';
+}
+
 function extractSocialCapital(report, basicResponse = {}) {
   return (
     basicResponse?.capitalSocial ||
@@ -174,59 +193,44 @@ function extractSocialCapital(report, basicResponse = {}) {
 }
 
 function extractLawsuitsSummary(report) {
+  const lawsuitBlocks = findNestedValuesByKeys(report, ['lawsuits'])
+    .filter((value) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.lawsuits));
+  const selectedBlock = lawsuitBlocks
+    .slice()
+    .sort((a, b) => Number(b?.total || 0) - Number(a?.total || 0))[0];
+
+  if (selectedBlock?.lawsuits?.length) {
+    const lawsuits = selectedBlock.lawsuits
+      .slice()
+      .sort((a, b) => String(b?.date || '').localeCompare(String(a?.date || '')))
+      .slice(0, 3)
+      .map((lawsuit) => [
+        lawsuit?.number ? `Processo ${lawsuit.number}` : 'Processo sem número',
+        lawsuit?.courtType,
+        lawsuit?.status,
+        lawsuit?.formattedDate || formatShortDate(lawsuit?.date),
+        lawsuit?.value ? Number(lawsuit.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '',
+        lawsuit?.title,
+      ].filter(Boolean).join(' - '));
+
+    const suffix = Number(selectedBlock.total) > lawsuits.length
+      ? ` | +${Number(selectedBlock.total) - lawsuits.length} processo(s)`
+      : '';
+    return `${Number(selectedBlock.total) || lawsuits.length} processo(s): ${lawsuits.join(' | ')}${suffix}`;
+  }
+
   const items = findSummaryItemsByTitles(report, ['Processos'])
     .filter((item) => item?.value || item?.subValue || item?.resolution);
 
-  if (!items.length) {
-    const lawsuitBlocks = findNestedValuesByKeys(report, ['lawsuits'])
-      .filter((value) => value && typeof value === 'object' && !Array.isArray(value));
-    const selectedBlock = lawsuitBlocks.find((value) => Number(value?.total) > 0);
+  if (!items.length) return 'N/D';
 
-    if (!selectedBlock) return 'N/D';
-
-    const totalValue = Object.values(selectedBlock?.courtTypeSummary || {})
-      .reduce((sum, item) => sum + (Number(item?.totalValue) || 0), 0);
-    const latest = Object.values(selectedBlock?.courtTypeSummary || {})
-      .map((item) => item?.lastLawsuitDate)
-      .filter(Boolean)
-      .sort()
-      .pop();
-
-    return [
-      `${selectedBlock.total} processo(s)`,
-      totalValue ? totalValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '',
-      latest ? `Mais recente: ${formatShortDate(latest)}` : '',
-    ].filter(Boolean).join(' ');
-  }
-
-  const selected = items
-    .slice()
-    .sort((a, b) => {
-      const valueDiff = parseCurrencyNumber(b?.value) - parseCurrencyNumber(a?.value);
-      if (valueDiff !== 0) return valueDiff;
-      return parseCurrencyNumber(b?.subValue) - parseCurrencyNumber(a?.subValue);
-    })[0];
-
-  return [
-    selected?.value,
-    selected?.subValue,
-    selected?.resolution,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  return items
+    .map((item) => [item?.value, item?.subValue, item?.resolution].filter(Boolean).join(' '))
+    .join(' | ');
 }
 
 function extractChangesSummary(report) {
-  const summary = findSummaryItemByTitles(report, ['Alterações cadastrais', 'Alteracoes cadastrais']);
-  const parts = [];
-
-  if (summary) {
-    parts.push([
-      summary.value != null ? `${summary.value}` : '',
-      summary.subValue,
-      summary.dateText,
-    ].filter(Boolean).join(' '));
-  }
+  const changesFound = [];
 
   const historyDataDetails = findNestedValuesByKeys(report, ['historyData'])
     .find((value) => value && typeof value === 'object' && value.company)?.company || {};
@@ -271,7 +275,11 @@ function extractChangesSummary(report) {
         .sort()
         .pop();
       const details = getDetails?.();
-      parts.push(`${label}: ${changes.length}${latest ? ` - última em ${formatShortDate(latest)}` : ''}${details ? ` (${details})` : ''}`);
+      changesFound.push({
+        label,
+        date: latest || '',
+        text: `${label}${latest ? ` - última em ${formatShortDate(latest)}` : ''}${details ? ` (${details})` : ''}`,
+      });
     }
   }
 
@@ -281,10 +289,18 @@ function extractChangesSummary(report) {
   if (taxRegimes.length >= 2) {
     const previous = taxRegimes[taxRegimes.length - 2];
     const current = taxRegimes[taxRegimes.length - 1];
-    parts.push(`Regime tributário: ${previous?.taxRegime || 'N/D'} > ${current?.taxRegime || 'N/D'}${current?.changeDate ? ` em ${formatShortDate(current.changeDate)}` : ''}`);
+    changesFound.push({
+      label: 'Regime tributário',
+      date: current?.changeDate || '',
+      text: `Regime tributário: ${previous?.taxRegime || 'N/D'} > ${current?.taxRegime || 'N/D'}${current?.changeDate ? ` em ${formatShortDate(current.changeDate)}` : ''}`,
+    });
   }
 
-  return parts.length ? parts.join(' | ') : 'N/D';
+  const latestChange = changesFound
+    .slice()
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
+
+  return latestChange?.text || 'N/D';
 }
 
 function extractContactsSummary(report) {
@@ -634,6 +650,7 @@ export function buildAnaliseCreditoCompletaClipboardText(report) {
   const changes = extractChangesSummary(report);
   const contacts = extractContactsSummary(report);
   const restrictionAnswer = hasRestrictionFromSummary(report) ? 'Sim' : 'Não';
+  const restrictions = extractRestrictionsSummary(report);
   const partners = extractCurrentPartners(report);
   const partnersText = partners.length
     ? partners.map((partner) => [
@@ -682,6 +699,7 @@ Tipo de Sociedade: ${companyType}
 Faturamento Anual: ${estimatedBilling}
 Capital social: ${socialCapital}
 Tem restrição? ${restrictionAnswer}
+Restrições: ${restrictions}
  
 Processos: ${lawsuits}
 Alteração: ${changes}
