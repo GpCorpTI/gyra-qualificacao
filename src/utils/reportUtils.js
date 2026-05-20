@@ -192,6 +192,53 @@ function extractSocialCapital(report, basicResponse = {}) {
   );
 }
 
+function extractProcessPolicyRules(report) {
+  const rules = [];
+  const seen = new Set();
+
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+
+    if (Array.isArray(node.policyRuleResults)) {
+      node.policyRuleResults.forEach((rule) => {
+        const description = cleanDescription(rule?.descriptions || '');
+        if (!description || !normalizeTitle(description).includes('process')) return;
+
+        const status = rule?.status?.value || rule?.status?.key || '';
+        const text = status ? `${description} (${status})` : description;
+        if (seen.has(text)) return;
+        seen.add(text);
+        rules.push(text);
+      });
+    }
+
+    Object.values(node).forEach(walk);
+  };
+
+  walk(report);
+  return rules;
+}
+
+function formatLawsuitDetail(lawsuit) {
+  const value = Number(lawsuit?.value || 0);
+  const title = lawsuit?.title || lawsuit?.subjects || 'Sem assunto informado';
+  const latestMovement = Array.isArray(lawsuit?.history)
+    ? lawsuit.history
+        .slice()
+        .sort((a, b) => String(b?.date || '').localeCompare(String(a?.date || '')))[0]
+    : null;
+
+  return [
+    lawsuit?.number ? `Processo ${lawsuit.number}` : 'Processo sem número',
+    lawsuit?.courtType ? `Tipo: ${lawsuit.courtType}` : '',
+    lawsuit?.status ? `Status: ${lawsuit.status}` : '',
+    lawsuit?.formattedDate || lawsuit?.date ? `Data: ${lawsuit.formattedDate || formatShortDate(lawsuit.date)}` : '',
+    value ? `Valor: ${value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}` : '',
+    `Assunto: ${title}`,
+    latestMovement?.content ? `Último andamento: ${String(latestMovement.content).slice(0, 180)}` : '',
+  ].filter(Boolean).join(' - ');
+}
+
 function extractLawsuitsSummary(report) {
   const lawsuitBlocks = findNestedValuesByKeys(report, ['lawsuits'])
     .filter((value) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.lawsuits));
@@ -204,19 +251,17 @@ function extractLawsuitsSummary(report) {
       .slice()
       .sort((a, b) => String(b?.date || '').localeCompare(String(a?.date || '')))
       .slice(0, 3)
-      .map((lawsuit) => [
-        lawsuit?.number ? `Processo ${lawsuit.number}` : 'Processo sem número',
-        lawsuit?.courtType,
-        lawsuit?.status,
-        lawsuit?.formattedDate || formatShortDate(lawsuit?.date),
-        lawsuit?.value ? Number(lawsuit.value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '',
-        lawsuit?.title,
-      ].filter(Boolean).join(' - '));
+      .map(formatLawsuitDetail);
 
     const suffix = Number(selectedBlock.total) > lawsuits.length
       ? ` | +${Number(selectedBlock.total) - lawsuits.length} processo(s)`
       : '';
     return `${Number(selectedBlock.total) || lawsuits.length} processo(s): ${lawsuits.join(' | ')}${suffix}`;
+  }
+
+  const processRules = extractProcessPolicyRules(report);
+  if (processRules.length) {
+    return processRules.slice(0, 4).join(' | ');
   }
 
   const items = findSummaryItemsByTitles(report, ['Processos'])
@@ -225,7 +270,13 @@ function extractLawsuitsSummary(report) {
   if (!items.length) return 'N/D';
 
   return items
-    .map((item) => [item?.value, item?.subValue, item?.resolution].filter(Boolean).join(' '))
+    .map((item) => [
+      'Resumo financeiro de processos',
+      item?.value,
+      item?.subValue,
+      item?.resolution,
+      'detalhe do assunto não disponível neste retorno',
+    ].filter(Boolean).join(' '))
     .join(' | ');
 }
 

@@ -33,11 +33,22 @@
         <strong :class="statusClass">{{ statusLabel }}</strong>
       </p>
 
+      <div class="btn-group">
+        <button class="btn-copy" @click="handleCopyRelease" :disabled="!result">
+          Copiar liberação
+        </button>
+      </div>
+
       <div class="release-summary">
         <p><strong>Status Gyra:</strong> {{ result.statusValue || 'Sem status' }}</p>
         <p><strong>Relatório:</strong> {{ result.reportId }}</p>
         <p><strong>Consulta:</strong> {{ result.reused ? 'Reaproveitada dentro de 45 dias' : 'Novo relatório criado' }}</p>
         <p><strong>CRM B1:</strong> {{ crmStatusLabel }}</p>
+      </div>
+
+      <div v-if="showRejectedReasons" class="reason-box">
+        <h4>Motivo da não liberação</h4>
+        <p>{{ result.releaseReasonSummary || 'Não foram retornados motivos detalhados pela política.' }}</p>
       </div>
     </div>
   </div>
@@ -78,6 +89,9 @@ export default {
       if (status === 'skipped') return 'Não acionado';
       return 'Não informado';
     },
+    showRejectedReasons() {
+      return this.result && !this.result.pending && !this.result.approved;
+    },
   },
   methods: {
     async handleSubmit() {
@@ -96,6 +110,44 @@ export default {
         this.loading = false;
       }
     },
+    buildReleaseCopyText() {
+      if (!this.result) return '';
+
+      return [
+        'Liberação de Pedido',
+        `Cliente: ${this.result.companyName || 'N/D'}`,
+        `CNPJ: ${this.result.cnpj || 'N/D'}`,
+        `CardCode: ${this.result.cardCode || 'N/D'}`,
+        `Status: ${this.statusLabel}`,
+        `Status Gyra: ${this.result.statusValue || 'Sem status'}`,
+        `Relatório: ${this.result.reportId || 'N/D'}`,
+        `Consulta: ${this.result.reused ? 'Reaproveitada dentro de 45 dias' : 'Novo relatório criado'}`,
+        `CRM B1: ${this.crmStatusLabel}`,
+        this.showRejectedReasons
+          ? `Motivo da não liberação: ${this.result.releaseReasonSummary || 'Não informado'}`
+          : '',
+      ].filter(Boolean).join('\n');
+    },
+    async handleCopyRelease() {
+      const text = this.buildReleaseCopyText();
+      if (!text) return;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        alert('Resumo de liberação copiado!');
+      } catch (err) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('Resumo de liberação copiado!');
+      }
+    },
   },
 };
 </script>
@@ -112,6 +164,45 @@ export default {
 
 .release-summary p {
   margin: 0;
+}
+
+.btn-group {
+  display: flex;
+  justify-content: center;
+  margin: 14px 0;
+}
+
+.btn-copy {
+  border: none;
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: white;
+  background: #264653;
+  cursor: pointer;
+}
+
+.btn-copy:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.reason-box {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(255, 123, 123, 0.36);
+  border-radius: 8px;
+  color: white;
+  background: rgba(255, 123, 123, 0.09);
+}
+
+.reason-box h4 {
+  margin: 0 0 8px;
+  color: #ffb3b3;
+}
+
+.reason-box p {
+  margin: 0;
+  line-height: 1.45;
 }
 
 .status-approved {
