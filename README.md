@@ -205,7 +205,7 @@ CRM_B1_CREDIT_ANALYSIS_OPERATION=credit_analysis_date_updated
 CRM_B1_ORDER_RELEASE_OPERATION=order_release_credit_check
 
 ORDER_RELEASE_POLICY_ID=6a0747892fab8c8353859468
-ORDER_RELEASE_SECTOR=ORDER_RELEASE
+ORDER_RELEASE_SECTOR=ORDR
 ```
 
 Observacao: `ANTHROPIC_API_KEY` e `CLAUDE_API_KEY` sao tratados como alternativas. Basta configurar uma delas.

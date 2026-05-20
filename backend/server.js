@@ -28,7 +28,7 @@ const CRM_B1_WEBHOOK_URL = process.env.CRM_B1_WEBHOOK_URL || '';
 const CRM_B1_WEBHOOK_TOKEN = process.env.CRM_B1_WEBHOOK_TOKEN || '';
 const CRM_B1_CREDIT_ANALYSIS_OPERATION = process.env.CRM_B1_CREDIT_ANALYSIS_OPERATION || 'credit_analysis_date_updated';
 const ORDER_RELEASE_POLICY_ID = process.env.ORDER_RELEASE_POLICY_ID || '6a0747892fab8c8353859468';
-const ORDER_RELEASE_SECTOR = process.env.ORDER_RELEASE_SECTOR || 'ORDER_RELEASE';
+const ORDER_RELEASE_SECTOR = normalizeReportSectorValue(process.env.ORDER_RELEASE_SECTOR || 'ORDR');
 const CRM_B1_ORDER_RELEASE_OPERATION = process.env.CRM_B1_ORDER_RELEASE_OPERATION || 'order_release_credit_check';
 const MARCI_REPORT_SECTOR = 'MARCI';
 let hasCnpjReportsPolicyId = false;
@@ -131,6 +131,13 @@ function formatCPFMask(digits11) {
   const s = String(digits11 || '').replace(/\D/g, '');
   if (s.length !== 11) return String(digits11 || '').trim();
   return `${s.slice(0,3)}.${s.slice(3,6)}.${s.slice(6,9)}-${s.slice(9,11)}`;
+}
+
+function normalizeReportSectorValue(value = '') {
+  const text = String(value || '').trim().toUpperCase();
+  if (!text) return null;
+  if (text === 'ORDER_RELEASE') return 'ORDR';
+  return text.slice(0, 10);
 }
 
 function isValidCPFDocument(cpf) {
@@ -281,17 +288,20 @@ function buildRecentReportLookupSql({ includePolicy = hasCnpjReportsPolicyId } =
 }
 
 function buildRecentReportLookupParams({ normalizedCnpj, policyId, sector }) {
+  const normalizedSector = normalizeReportSectorValue(sector);
   return hasCnpjReportsPolicyId
-    ? [normalizedCnpj, policyId, sector || null]
-    : [normalizedCnpj, sector || null];
+    ? [normalizedCnpj, policyId, normalizedSector || null]
+    : [normalizedCnpj, normalizedSector || null];
 }
 
 async function insertCnpjReport({ cnpj, normalizedCnpj, formattedCnpj, reportId, policyId, sector }) {
+  const normalizedSector = normalizeReportSectorValue(sector);
+
   if (hasCnpjReportsPolicyId) {
     await pool.execute(
       `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, policy_id, sector, created_at)
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [cnpj, normalizedCnpj, formattedCnpj, reportId, policyId, sector || null]
+      [cnpj, normalizedCnpj, formattedCnpj, reportId, policyId, normalizedSector || null]
     );
     return;
   }
@@ -299,7 +309,7 @@ async function insertCnpjReport({ cnpj, normalizedCnpj, formattedCnpj, reportId,
   await pool.execute(
     `INSERT INTO cnpj_reports (cnpj, normalized_cnpj, formatted_cnpj, report_id, sector, created_at)
      VALUES (?, ?, ?, ?, ?, NOW())`,
-    [cnpj, normalizedCnpj, formattedCnpj, reportId, sector || null]
+    [cnpj, normalizedCnpj, formattedCnpj, reportId, normalizedSector || null]
   );
 }
 
@@ -2483,7 +2493,7 @@ app.post('/api/report', async (req, res) => {
   try {
     const { token, cnpj, policyId, sector } = req.body;
     const resolvedPolicyId = policyId || DEFAULT_GYRA_POLICY_ID;
-    const resolvedSector = sector || null;
+    const resolvedSector = normalizeReportSectorValue(sector);
 
     const normalized = normalizeCNPJNumeric(cnpj);
     if (!isValidCNPJ(normalized)) {
