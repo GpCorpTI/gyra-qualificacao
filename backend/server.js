@@ -20,6 +20,7 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 const ANTHROPIC_MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS || 1600);
+const ANTHROPIC_TIMEOUT_MS = Number(process.env.ANTHROPIC_TIMEOUT_MS || 90000);
 const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const DEFAULT_GYRA_POLICY_ID = process.env.GYRA_POLICY_ID || '67fd54db0b1b2e14e6e22e19';
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPHistTitulosCliente"';
@@ -222,6 +223,27 @@ function extractReportSummary(report) {
   const businessName = extractCompanyName(report);
 
   return { statusValue, risks, rules: rulesArr, businessName };
+}
+
+function extractOrderReleaseReasons(report) {
+  const { risks, rules } = extractReportSummary(report);
+  const reasons = [];
+  const seen = new Set();
+
+  const addReason = (reason) => {
+    const text = cleanDescription(reason || '').replace(/\s+/g, ' ').trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    reasons.push(text);
+  };
+
+  (rules || []).forEach((rule) => {
+    addReason(rule?.status ? `${rule.description} (${rule.status})` : rule?.description);
+  });
+
+  (risks || []).forEach((risk) => addReason(`Risco identificado: ${risk}`));
+
+  return reasons.slice(0, 8);
 }
 
 async function execRows(sql, params = []) {
@@ -956,7 +978,7 @@ async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport, sap
       'anthropic-version': ANTHROPIC_VERSION,
       'content-type': 'application/json',
     },
-    timeout: 30000,
+    timeout: ANTHROPIC_TIMEOUT_MS,
   });
 
   const contentText = extractAnthropicTextBlocks(response.data);
@@ -1090,16 +1112,25 @@ function buildMarciCombinedDeterministicMessage(summary, sapMessage, options = {
   const isPending = String(summary.status || '').toUpperCase() === 'PENDING';
   const gyraCards = isPending ? buildMarciGyraPendingCards(summary) : buildMarciGyraBaseCards(summary);
   const sapCards = sapMessage?.cards || [];
+  const statusText = normalizePlainText(summary.status || '');
+  const isHighRiskStatus = statusText.includes('REJECTED') || statusText.includes('A VISTA') || statusText.includes('DENIED') || statusText.includes('NEGADO');
+  const hasSapData = Boolean(sapMessage?.metadata?.cardCode) || (sapMessage?.cards || []).some((card) => card?.category === 'SAP');
+  const analyticalFallbackAnswer = isPending
+    ? `O relatorio do GYRA+ ainda esta em analise para ${summary.companyName}. Enquanto o processamento nao conclui, qualquer decisao de limite deve permanecer em espera, pois a ausencia da leitura completa reduz confianca para avaliar risco, capacidade e politica. Os dados SAP disponiveis podem apoiar uma triagem inicial, mas nao substituem a conclusao do bureau.`
+    : [
+        `${summary.companyName} apresenta uma leitura de credito que exige postura ${isHighRiskStatus ? 'conservadora' : 'criteriosa'}, considerando o status ${summary.status || 'nao informado'} e risco ${summary.risk || 'nao informado'} no GYRA+.`,
+        `A relacao entre faturamento e credito indica ${summary.faturamentoXCredito || 'base insuficiente para proporcao'}, enquanto o limite recomendado de ${summary.limiteRecomendado || 'N/D'} ${isHighRiskStatus ? 'reforca que os indicadores atuais nao sustentam exposicao segura.' : 'deve ser avaliado em conjunto com comportamento e capacidade de pagamento.'}`,
+        hasSapData
+          ? 'A presenca de dados SAP deve pesar na decisao principalmente pelo comportamento de pagamento, atrasos, reincidencia e titulos em aberto; se houver deterioracao operacional, ela deve prevalecer sobre qualquer leitura isolada de score ou faturamento.'
+          : 'A ausencia ou indisponibilidade de dados SAP limita a leitura de capacidade real de pagamento e deve ser tratada como fator de cautela antes de qualquer evolucao de limite.',
+        isHighRiskStatus
+          ? 'Na pratica, o conjunto sugere que a prioridade deve ser regularizacao, acompanhamento e validacao adicional antes de qualquer concessao de credito.'
+          : 'Na pratica, o proximo passo deve ser confirmar consistencia entre limite, faturamento e historico de pagamento antes de expandir exposicao.',
+      ].join(' ');
 
   return buildMarciMessage({
     intent: 'credit_overview',
-    answer: isPending
-      ? `O relatorio do GYRA+ ainda esta em analise para ${summary.companyName}. Mesmo assim, ja trouxe os dados objetivos disponiveis do SAP para apoiar a leitura inicial.`
-      : [
-          `A leitura combinada considera o GYRA+ e os dados SAP disponiveis para ${summary.companyName}.`,
-          `No GYRA+, o status esta como ${summary.status}, com risco ${summary.risk}, limite recomendado de ${summary.limiteRecomendado} e relacao faturamento x credito em ${summary.faturamentoXCredito}.`,
-          sapMessage?.answer || 'A consulta SAP nao retornou uma leitura textual nesta tentativa.',
-        ].join(' '),
+    answer: analyticalFallbackAnswer,
     sources: uniqueSources(['GYRA', ...(sapMessage?.sources || [])]),
     cards: [...gyraCards, ...sapCards],
     suggestions: isPending
@@ -1146,6 +1177,7 @@ async function buildMarciCombinedCreditResponse({ cnpj, policyId, userMessage })
   }
 
   if (!getAnthropicApiKey()) {
+    logger.warn({ cnpj: summary.cnpj }, 'marci.claude.combined.not_configured');
     return deterministic;
   }
 
@@ -1356,6 +1388,7 @@ async function buildMarciGyraChatResponse({ cnpj, policyId, userMessage }) {
   const deterministic = buildMarciGyraDeterministicMessage(summary);
 
   if (!getAnthropicApiKey()) {
+    logger.warn({ cnpj: summary.cnpj }, 'marci.claude.gyra.not_configured');
     return deterministic;
   }
 
@@ -1638,6 +1671,7 @@ async function buildOrderReleaseResult({ cnpj }) {
   const statusValue = fullReport?.status?.value || statusKey || 'Sem status';
   const isPending = statusKey === 'PENDING' || normalizePlainText(statusValue).includes('PEND');
   const approved = statusKey === 'APPROVED' || normalizePlainText(statusValue).includes('APROV');
+  const releaseReasons = isPending ? [] : extractOrderReleaseReasons(fullReport);
 
   if (!isPending) {
     await updateStoredReportSummary(reportId, fullReport);
@@ -1678,6 +1712,12 @@ async function buildOrderReleaseResult({ cnpj }) {
     statusValue,
     approved,
     pending: isPending,
+    releaseReasons,
+    releaseReasonSummary: releaseReasons.length
+      ? releaseReasons.join(' | ')
+      : approved
+        ? 'Cliente aprovado pela política de liberação de pedido.'
+        : 'Não foram retornados motivos detalhados pela política.',
     cardCode,
     policyId: ORDER_RELEASE_POLICY_ID,
     partnerDocsUpdate,
