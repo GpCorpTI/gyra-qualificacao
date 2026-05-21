@@ -64,6 +64,11 @@ export async function checkOrderRelease({ cnpj }) {
   return data;
 }
 
+export async function updateOrderReleaseCrm({ cnpj }) {
+  const { data } = await api.post('/order-release/update-crm', { cnpj });
+  return data;
+}
+
 export async function searchPartnerDocsByCpf({ cpf }) {
   const { data } = await api.post('/partner-docs/search', { cpf });
   return data;

@@ -37,7 +37,7 @@
         <button
           v-if="showActionButton"
           class="btn-release"
-          :class="{ 'btn-release--pending': result?.pending }"
+          :class="{ 'btn-release--pending': result?.pending, 'btn-release--denied': result && !result.pending && !result.approved }"
           @click="handleActionButton"
           :disabled="actionButtonDisabled"
         >
@@ -65,7 +65,7 @@
 </template>
 
 <script>
-import { checkOrderRelease } from '@/services/gyraApi';
+import { checkOrderRelease, updateOrderReleaseCrm } from '@/services/gyraApi';
 
 export default {
   name: 'LiberacaoPedido',
@@ -73,6 +73,7 @@ export default {
     return {
       cnpj: '',
       loading: false,
+      loadingCrm: false,
       error: '',
       result: null,
     };
@@ -96,6 +97,7 @@ export default {
       if (status === 'failed') return 'Falha ao atualizar CRM';
       if (status === 'skipped' && reason === 'GYRA_PENDING') return 'Aguardando conclusão do Gyra';
       if (status === 'skipped' && reason === 'CARD_CODE_NOT_FOUND') return 'CardCode não encontrado';
+      if (status === 'skipped' && reason === 'WAITING_USER_ACTION') return 'Aguardando ação do usuário';
       if (status === 'skipped') return 'Não acionado';
       return 'Não informado';
     },
@@ -103,16 +105,19 @@ export default {
       return this.result && !this.result.pending && !this.result.approved;
     },
     showActionButton() {
-      return this.result && (this.result.pending || this.result.approved);
+      return !!this.result;
     },
     actionButtonDisabled() {
-      return this.loading || this.result?.crmWebhook?.status === 'success';
+      return this.loading || this.loadingCrm || this.result?.crmWebhook?.status === 'success';
     },
     actionButtonLabel() {
-      if (this.loading) return this.result?.pending ? 'Consultando novamente...' : 'Liberando pedido...';
-      if (this.result?.pending) return 'Consultar novamente';
+      if (this.loadingCrm) return 'Atualizando CRM B1...';
+      if (this.result?.crmWebhook?.status === 'success' && this.result?.pending) return 'Pendência enviada ao CRM B1';
+      if (this.result?.crmWebhook?.status === 'success' && !this.result?.approved) return 'Não liberação enviada ao CRM B1';
       if (this.result?.crmWebhook?.status === 'success') return 'Pedido liberado no CRM B1';
       if (this.result?.crmWebhook?.status === 'failed') return 'Tentar liberar novamente';
+      if (this.result?.pending) return 'Enviar pendência ao CRM B1';
+      if (!this.result?.approved) return 'Enviar não liberação ao CRM B1';
       return 'Liberar pedido no CRM B1';
     },
   },
@@ -135,17 +140,17 @@ export default {
     },
     async handleActionButton() {
       const outgoing = String(this.result?.cnpj || this.cnpj || '').trim();
-      if (!outgoing || this.loading) return;
+      if (!outgoing || this.loading || this.loadingCrm) return;
 
-      this.loading = true;
+      this.loadingCrm = true;
       this.error = '';
 
       try {
-        this.result = await checkOrderRelease({ cnpj: outgoing });
+        this.result = await updateOrderReleaseCrm({ cnpj: outgoing });
       } catch (err) {
-        this.error = err.response?.data?.error || err.message || 'Erro ao liberar pedido no CRM B1.';
+        this.error = err.response?.data?.error || err.message || 'Erro ao atualizar liberação no CRM B1.';
       } finally {
-        this.loading = false;
+        this.loadingCrm = false;
       }
     },
     buildReleaseCopyText() {
@@ -239,6 +244,15 @@ export default {
 
 .btn-release--pending:not(:disabled):hover {
   background: #d49a16;
+}
+
+.btn-release--denied {
+  background: #9b2f3a;
+  box-shadow: 0 0 0 1px rgba(255, 123, 123, 0.24);
+}
+
+.btn-release--denied:not(:disabled):hover {
+  background: #b83a47;
 }
 
 .btn-copy:disabled,
