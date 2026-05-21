@@ -35,12 +35,13 @@
 
       <div class="btn-group">
         <button
-          v-if="showReleaseButton"
+          v-if="showActionButton"
           class="btn-release"
-          @click="handleReleaseOrder"
-          :disabled="releaseButtonDisabled"
+          :class="{ 'btn-release--pending': result?.pending }"
+          @click="handleActionButton"
+          :disabled="actionButtonDisabled"
         >
-          {{ releaseButtonLabel }}
+          {{ actionButtonLabel }}
         </button>
 
         <button class="btn-copy" @click="handleCopyRelease" :disabled="!result">
@@ -101,14 +102,15 @@ export default {
     showRejectedReasons() {
       return this.result && !this.result.pending && !this.result.approved;
     },
-    showReleaseButton() {
-      return this.result && !this.result.pending && this.result.approved;
+    showActionButton() {
+      return this.result && (this.result.pending || this.result.approved);
     },
-    releaseButtonDisabled() {
+    actionButtonDisabled() {
       return this.loading || this.result?.crmWebhook?.status === 'success';
     },
-    releaseButtonLabel() {
-      if (this.loading) return 'Liberando pedido...';
+    actionButtonLabel() {
+      if (this.loading) return this.result?.pending ? 'Consultando novamente...' : 'Liberando pedido...';
+      if (this.result?.pending) return 'Consultar novamente';
       if (this.result?.crmWebhook?.status === 'success') return 'Pedido liberado no CRM B1';
       if (this.result?.crmWebhook?.status === 'failed') return 'Tentar liberar novamente';
       return 'Liberar pedido no CRM B1';
@@ -131,7 +133,7 @@ export default {
         this.loading = false;
       }
     },
-    async handleReleaseOrder() {
+    async handleActionButton() {
       const outgoing = String(this.result?.cnpj || this.cnpj || '').trim();
       if (!outgoing || this.loading) return;
 
@@ -228,6 +230,15 @@ export default {
 
 .btn-release:not(:disabled):hover {
   background: #25a85b;
+}
+
+.btn-release--pending {
+  background: #b98512;
+  box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.24);
+}
+
+.btn-release--pending:not(:disabled):hover {
+  background: #d49a16;
 }
 
 .btn-copy:disabled,
