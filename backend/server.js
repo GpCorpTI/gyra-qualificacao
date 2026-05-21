@@ -1757,7 +1757,12 @@ async function updateStoredReportSummary(reportId, fullReport) {
   );
 }
 
-async function buildOrderReleaseResult({ cnpj }) {
+function getOrderReleaseCrmAdditionalInformation({ pending, approved }) {
+  if (pending) return 'PENDING';
+  return approved ? 'APPROVED' : 'NOT_APPROVED';
+}
+
+async function buildOrderReleaseResult({ cnpj, updateCrm = false }) {
   const normalized = normalizeCNPJNumeric(cnpj);
 
   if (!isValidCNPJ(normalized)) {
@@ -1799,13 +1804,13 @@ async function buildOrderReleaseResult({ cnpj }) {
   }
 
   const cardCode = await getCardCodeByCNPJ_HANA(normalized);
-  let crmWebhook = { status: 'skipped', reason: isPending ? 'GYRA_PENDING' : 'CARD_CODE_NOT_FOUND' };
+  let crmWebhook = { status: 'skipped', reason: updateCrm ? 'CARD_CODE_NOT_FOUND' : 'WAITING_USER_ACTION' };
 
-  if (!isPending && cardCode) {
+  if (updateCrm && cardCode) {
     crmWebhook = await notifyCrmB1Webhook({
       key: cardCode,
       operation: CRM_B1_ORDER_RELEASE_OPERATION,
-      additionalInformation: approved ? 'APPROVED' : 'NOT_APPROVED',
+      additionalInformation: getOrderReleaseCrmAdditionalInformation({ pending: isPending, approved }),
     });
   }
 
@@ -2755,7 +2760,7 @@ app.post('/api/order-release', async (req, res) => {
 
   try {
     const { cnpj } = req.body || {};
-    const result = await buildOrderReleaseResult({ cnpj });
+    const result = await buildOrderReleaseResult({ cnpj, updateCrm: false });
     const dur = Date.now() - start;
 
     req.log.info(
@@ -2775,6 +2780,35 @@ app.post('/api/order-release', async (req, res) => {
     const dur = Date.now() - start;
     req.log.error({ err: err.message, ms: dur }, 'order.release.check.fail');
     res.status(err.statusCode || 500).json({ error: err.message || 'Erro ao consultar liberacao de pedido' });
+  }
+});
+
+app.post('/api/order-release/update-crm', async (req, res) => {
+  const start = Date.now();
+
+  try {
+    const { cnpj } = req.body || {};
+    const result = await buildOrderReleaseResult({ cnpj, updateCrm: true });
+    const dur = Date.now() - start;
+
+    req.log.info(
+      {
+        cnpj: result.cnpj,
+        reportId: result.reportId,
+        approved: result.approved,
+        pending: result.pending,
+        crmWebhook: result.crmWebhook?.status,
+        crmReason: result.crmWebhook?.reason,
+        ms: dur,
+      },
+      'order.release.crm.update'
+    );
+
+    res.json(result);
+  } catch (err) {
+    const dur = Date.now() - start;
+    req.log.error({ err: err.message, ms: dur }, 'order.release.crm.update.fail');
+    res.status(err.statusCode || 500).json({ error: err.message || 'Erro ao atualizar liberacao de pedido no CRM' });
   }
 });
 
