@@ -111,14 +111,10 @@ export default {
       return this.loading || this.loadingCrm || this.result?.crmWebhook?.status === 'success';
     },
     actionButtonLabel() {
-      if (this.loadingCrm) return 'Atualizando CRM B1...';
-      if (this.result?.crmWebhook?.status === 'success' && this.result?.pending) return 'Pendência enviada ao CRM B1';
-      if (this.result?.crmWebhook?.status === 'success' && !this.result?.approved) return 'Não liberação enviada ao CRM B1';
-      if (this.result?.crmWebhook?.status === 'success') return 'Pedido liberado no CRM B1';
-      if (this.result?.crmWebhook?.status === 'failed') return 'Tentar liberar novamente';
-      if (this.result?.pending) return 'Enviar pendência ao CRM B1';
-      if (!this.result?.approved) return 'Enviar não liberação ao CRM B1';
-      return 'Liberar pedido no CRM B1';
+      if (this.loadingCrm) return 'Liberando no CRM B1...';
+      if (this.result?.crmWebhook?.status === 'success') return 'Liberado no CRM B1';
+      if (this.result?.crmWebhook?.status === 'failed') return 'Tentar liberar no CRM B1 novamente';
+      return 'Liberar no CRM B1';
     },
   },
   methods: {
