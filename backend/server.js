@@ -1804,9 +1804,10 @@ async function buildOrderReleaseResult({ cnpj, updateCrm = false }) {
   }
 
   const cardCode = await getCardCodeByCNPJ_HANA(normalized);
-  let crmWebhook = { status: 'skipped', reason: updateCrm ? 'CARD_CODE_NOT_FOUND' : 'WAITING_USER_ACTION' };
+  const shouldUpdateCrm = (approved && !isPending) || updateCrm;
+  let crmWebhook = { status: 'skipped', reason: shouldUpdateCrm ? 'CARD_CODE_NOT_FOUND' : 'WAITING_USER_ACTION' };
 
-  if (updateCrm && cardCode) {
+  if (shouldUpdateCrm && cardCode) {
     crmWebhook = await notifyCrmB1Webhook({
       key: cardCode,
       operation: CRM_B1_ORDER_RELEASE_OPERATION,
