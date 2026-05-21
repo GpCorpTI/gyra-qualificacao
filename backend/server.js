@@ -173,6 +173,23 @@ function isCashOnlyCreditStatus(status = '') {
   );
 }
 
+function isGyraPendingStatus(statusKey = '', statusValue = '') {
+  const key = normalizePlainText(statusKey);
+  const value = normalizePlainText(statusValue);
+  return key === 'PENDING' || value.includes('PEND');
+}
+
+function isGyraApprovedStatus(statusKey = '', statusValue = '') {
+  const key = normalizePlainText(statusKey);
+  const value = normalizePlainText(statusValue);
+  return (
+    key === 'APPROVED' ||
+    value === 'APPROVED' ||
+    value.includes('APROV') ||
+    value.includes('LIBERAD')
+  );
+}
+
 // Limpa "{{ ... }}" de descrições
 function cleanDescription(text) {
   return (text || '').replace(/\{\{.*?\}\}/g, '').trim();
@@ -524,6 +541,59 @@ function formatPercent(value) {
   return `${value.toFixed(2).replace('.', ',')}%`;
 }
 
+const MARCI_CREDIT_LIMIT_TABLE = [
+  { group: 'P P', annualRevenue: 570000, min: 20000, medium: 41171.875, max: 62343.75 },
+  { group: 'P P', annualRevenue: 900000, min: 32812.5, medium: 65625, max: 98437.5 },
+  { group: 'P P', annualRevenue: 1100000, min: 48125, medium: 88229.16666666666, max: 128333.33333333333 },
+  { group: 'P P', annualRevenue: 1350000, min: 59062.5, medium: 108281.25, max: 157500 },
+  { group: 'P P', annualRevenue: 1650000, min: 84218.75, medium: 144375, max: 204531.25 },
+  { group: 'P P', annualRevenue: 1900000, min: 96979.16666666666, medium: 166250, max: 235520.8333333333 },
+  { group: 'M P', annualRevenue: 2150000, min: 106604.16666666666, medium: 182750, max: 258895.8333333333 },
+  { group: 'M P', annualRevenue: 2600000, min: 128916.66666666666, medium: 230208.3333333333, max: 331500 },
+  { group: 'M P', annualRevenue: 3100000, min: 153708.33333333334, medium: 274479.1666666667, max: 395250 },
+  { group: 'M P', annualRevenue: 3400000, min: 168583.33333333334, medium: 301041.6666666667, max: 433500 },
+  { group: 'M P', annualRevenue: 3800000, min: 188416.66666666666, medium: 336458.3333333334, max: 484500 },
+  { group: 'M P', annualRevenue: 4750000, min: 261250, medium: 424531.25, max: 587812.5 },
+  { group: 'M P', annualRevenue: 5250000, min: 288750, medium: 469218.75, max: 649687.5 },
+  { group: 'M P', annualRevenue: 5750000, min: 316250, medium: 513906.25, max: 711562.5 },
+  { group: 'G P', annualRevenue: 8900000, min: 534000, medium: 801000, max: 1068000 },
+  { group: 'G P', annualRevenue: 12125000, min: 727500, medium: 1091250, max: 1455000 },
+  { group: 'G P', annualRevenue: 16800000, min: 945000, medium: 1417500, max: 1890000 },
+  { group: 'G P', annualRevenue: 21750000, min: 1223437.5, medium: 1861718.75, max: 2500000 },
+];
+
+function parseMoneyValue(value) {
+  return parseMoneyToken(value) ?? parseCurrencyBR(value);
+}
+
+function resolveMarciCreditLimitReference(faturamentoAnual) {
+  const annualRevenue = typeof faturamentoAnual === 'number'
+    ? faturamentoAnual
+    : parseMoneyValue(faturamentoAnual);
+
+  if (!annualRevenue || !Number.isFinite(annualRevenue) || annualRevenue <= 0) return null;
+
+  const sortedTable = [...MARCI_CREDIT_LIMIT_TABLE].sort((a, b) => a.annualRevenue - b.annualRevenue);
+  const matchedRow = sortedTable.find((row) => annualRevenue <= row.annualRevenue) || sortedTable[sortedTable.length - 1];
+  const isAboveTable = annualRevenue > sortedTable[sortedTable.length - 1].annualRevenue;
+
+  return {
+    source: 'Tabela Analise de Credito - MARCI',
+    matchRule: isAboveTable ? 'maior_faixa_disponivel' : 'faixa_imediatamente_superior',
+    group: matchedRow.group,
+    gyraAnnualRevenue: annualRevenue,
+    matchedAnnualRevenue: matchedRow.annualRevenue,
+    gyraAnnualRevenueFormatted: formatCurrencyBR(annualRevenue),
+    matchedAnnualRevenueFormatted: formatCurrencyBR(matchedRow.annualRevenue),
+    min: matchedRow.min,
+    medium: matchedRow.medium,
+    max: matchedRow.max,
+    minFormatted: formatCurrencyBR(matchedRow.min),
+    mediumFormatted: formatCurrencyBR(matchedRow.medium),
+    maxFormatted: formatCurrencyBR(matchedRow.max),
+  };
+}
+
 function buildMarciBillingVsCredit(report) {
   const presumedBilling = findSummaryItemByTitle(report, 'Faturamento presumido');
   const creditRecommendation = findSummaryItemByTitle(report, 'Limite recomendado');
@@ -533,8 +603,8 @@ function buildMarciBillingVsCredit(report) {
   const faixaFaturamento = response?.faixaFaturamento || 'Nao identificado';
   const limiteRecomendado = creditRecommendation?.value || 'Nao identificado';
 
-  const faturamentoBase = parseCurrencyBR(faturamentoPresumido) ?? estimateBillingFromRange(faixaFaturamento);
-  const creditoBase = parseCurrencyBR(limiteRecomendado);
+  const faturamentoBase = parseMoneyValue(faturamentoPresumido) ?? estimateBillingFromRange(faixaFaturamento);
+  const creditoBase = parseMoneyValue(limiteRecomendado);
   const percentual = faturamentoBase > 0 && creditoBase != null
     ? (creditoBase / faturamentoBase) * 100
     : null;
@@ -547,6 +617,7 @@ function buildMarciBillingVsCredit(report) {
     faturamentoPresumido,
     faixaFaturamento,
     limiteRecomendado,
+    faturamentoBase,
     percentualCreditoSobreFaturamento: percentual != null ? formatPercent(percentual) : 'Nao identificado',
     descricao,
   };
@@ -598,6 +669,7 @@ function buildMarciGyraSummary(report, { reused, createdAt, reportId, normalized
   const response = findResponseValues(report);
   const scoreSummary = findSummaryItemByTitle(report, 'Score Serasa');
   const billingVsCredit = buildMarciBillingVsCredit(report);
+  const creditLimitReference = resolveMarciCreditLimitReference(billingVsCredit.faturamentoBase);
   const { statusValue, risks } = extractReportSummary(report);
   const currentOwners = extractCurrentOwners(report, normalizedCnpj, formattedCnpj);
 
@@ -613,10 +685,12 @@ function buildMarciGyraSummary(report, { reused, createdAt, reportId, normalized
     risk: risks?.[0] || 'Nao identificado',
     releituraCliente: reused ? 'Sim' : 'Nao',
     faturamentoPresumido: billingVsCredit.faturamentoPresumido,
+    faturamentoBase: billingVsCredit.faturamentoBase,
     faixaFaturamento: billingVsCredit.faixaFaturamento,
     limiteRecomendado: billingVsCredit.limiteRecomendado,
     faturamentoXCredito: billingVsCredit.descricao,
     percentualCreditoSobreFaturamento: billingVsCredit.percentualCreditoSobreFaturamento,
+    creditLimitReference,
     sociosAtuais: currentOwners,
     sociosAtuaisResumo: buildCurrentOwnersSummary(currentOwners),
   };
@@ -758,6 +832,37 @@ function buildMarciGyraBaseCards(summary) {
       }
     ),
   ];
+
+  if (summary.creditLimitReference) {
+    const limitNote = [
+      `Faturamento GYRA: ${summary.creditLimitReference.gyraAnnualRevenueFormatted}`,
+      `Faixa: ${summary.creditLimitReference.matchedAnnualRevenueFormatted}`,
+      `Grupo: ${summary.creditLimitReference.group}`,
+    ].join(' | ');
+
+    cards.push(
+      buildMarciCard(
+        'Limite minimo',
+        summary.creditLimitReference.minFormatted,
+        limitNote,
+        { category: 'Politica interna', tone: 'insight' }
+      ),
+      buildMarciCard(
+        'Limite medio',
+        summary.creditLimitReference.mediumFormatted,
+        limitNote,
+        { category: 'Politica interna', tone: 'insight' }
+      ),
+      buildMarciCard(
+        'Limite maximo',
+        summary.creditLimitReference.maxFormatted,
+        summary.creditLimitReference.matchRule === 'maior_faixa_disponivel'
+          ? `${limitNote} | Cliente acima da maior faixa da tabela.`
+          : limitNote,
+        { category: 'Politica interna', tone: 'insight' }
+      )
+    );
+  }
 
   if (summary.clientPhone) {
     cards.push(
@@ -939,6 +1044,7 @@ function buildGyraClaudeContext(summary, fullReport) {
     risks,
     triggeredPolicyRules: rules,
     responseValues,
+    creditLimitReference: summary.creditLimitReference || null,
     summary,
   };
 }
@@ -963,6 +1069,7 @@ async function requestClaudeGyraAnalysis({ userMessage, summary, fullReport, sap
                 userRequest: userMessage,
                 source: sapContext ? 'GYRA+SAP' : 'GYRA',
                 gyraDerivedContext: derivedContext,
+                creditLimitReference: derivedContext.creditLimitReference,
                 gyraFullReport: fullReport,
                 sapContext,
               }),
@@ -1669,9 +1776,9 @@ async function buildOrderReleaseResult({ cnpj }) {
   const fullReport = await fetchGyraReport(token, reportId);
   const statusKey = String(fullReport?.status?.key || '').toUpperCase();
   const statusValue = fullReport?.status?.value || statusKey || 'Sem status';
-  const isPending = statusKey === 'PENDING' || normalizePlainText(statusValue).includes('PEND');
-  const approved = statusKey === 'APPROVED' || normalizePlainText(statusValue).includes('APROV');
-  const releaseReasons = isPending ? [] : extractOrderReleaseReasons(fullReport);
+  const isPending = isGyraPendingStatus(statusKey, statusValue);
+  const approved = isGyraApprovedStatus(statusKey, statusValue);
+  const releaseReasons = isPending || approved ? [] : extractOrderReleaseReasons(fullReport);
 
   if (!isPending) {
     await updateStoredReportSummary(reportId, fullReport);
