@@ -34,6 +34,15 @@
       </p>
 
       <div class="btn-group">
+        <button
+          v-if="showReleaseButton"
+          class="btn-release"
+          @click="handleReleaseOrder"
+          :disabled="releaseButtonDisabled"
+        >
+          {{ releaseButtonLabel }}
+        </button>
+
         <button class="btn-copy" @click="handleCopyRelease" :disabled="!result">
           Copiar liberação
         </button>
@@ -92,6 +101,18 @@ export default {
     showRejectedReasons() {
       return this.result && !this.result.pending && !this.result.approved;
     },
+    showReleaseButton() {
+      return this.result && !this.result.pending && this.result.approved;
+    },
+    releaseButtonDisabled() {
+      return this.loading || this.result?.crmWebhook?.status === 'success';
+    },
+    releaseButtonLabel() {
+      if (this.loading) return 'Liberando pedido...';
+      if (this.result?.crmWebhook?.status === 'success') return 'Pedido liberado no CRM B1';
+      if (this.result?.crmWebhook?.status === 'failed') return 'Tentar liberar novamente';
+      return 'Liberar pedido no CRM B1';
+    },
   },
   methods: {
     async handleSubmit() {
@@ -106,6 +127,21 @@ export default {
         this.result = await checkOrderRelease({ cnpj: outgoing });
       } catch (err) {
         this.error = err.response?.data?.error || err.message || 'Erro ao verificar liberação do pedido.';
+      } finally {
+        this.loading = false;
+      }
+    },
+    async handleReleaseOrder() {
+      const outgoing = String(this.result?.cnpj || this.cnpj || '').trim();
+      if (!outgoing || this.loading) return;
+
+      this.loading = true;
+      this.error = '';
+
+      try {
+        this.result = await checkOrderRelease({ cnpj: outgoing });
+      } catch (err) {
+        this.error = err.response?.data?.error || err.message || 'Erro ao liberar pedido no CRM B1.';
       } finally {
         this.loading = false;
       }
@@ -172,16 +208,30 @@ export default {
   margin: 14px 0;
 }
 
-.btn-copy {
+.btn-copy,
+.btn-release {
   border: none;
   border-radius: 6px;
   padding: 10px 14px;
   color: white;
-  background: #264653;
   cursor: pointer;
 }
 
-.btn-copy:disabled {
+.btn-copy {
+  background: #264653;
+}
+
+.btn-release {
+  background: #1f8f4d;
+  box-shadow: 0 0 0 1px rgba(112, 224, 0, 0.2);
+}
+
+.btn-release:not(:disabled):hover {
+  background: #25a85b;
+}
+
+.btn-copy:disabled,
+.btn-release:disabled {
   cursor: not-allowed;
   opacity: 0.65;
 }
