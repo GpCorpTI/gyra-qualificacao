@@ -842,24 +842,28 @@ function buildMarciGyraBaseCards(summary) {
 
     cards.push(
       buildMarciCard(
-        'Limite minimo',
-        summary.creditLimitReference.minFormatted,
-        limitNote,
-        { category: 'Politica interna', tone: 'insight' }
-      ),
-      buildMarciCard(
-        'Limite medio',
-        summary.creditLimitReference.mediumFormatted,
-        limitNote,
-        { category: 'Politica interna', tone: 'insight' }
-      ),
-      buildMarciCard(
-        'Limite maximo',
-        summary.creditLimitReference.maxFormatted,
+        'Tabela de limites',
+        `${summary.creditLimitReference.minFormatted} | ${summary.creditLimitReference.mediumFormatted} | ${summary.creditLimitReference.maxFormatted}`,
         summary.creditLimitReference.matchRule === 'maior_faixa_disponivel'
           ? `${limitNote} | Cliente acima da maior faixa da tabela.`
           : limitNote,
-        { category: 'Politica interna', tone: 'insight' }
+        {
+          category: 'Politica interna',
+          tone: 'insight',
+          emphasis: 'wide',
+          table: {
+            variant: 'metrics',
+            columns: [
+              { key: 'label', label: 'Faixa' },
+              { key: 'value', label: 'Valor' },
+            ],
+            rows: [
+              { id: 'minimum', label: 'Minimo', value: summary.creditLimitReference.minFormatted },
+              { id: 'medium', label: 'Medio', value: summary.creditLimitReference.mediumFormatted },
+              { id: 'maximum', label: 'Maximo', value: summary.creditLimitReference.maxFormatted },
+            ],
+          },
+        }
       )
     );
   }
@@ -1125,13 +1129,15 @@ function appendClaudeAnalysisCards(cards, analysis) {
   const nextCards = [...cards];
 
   if (analysis.categoriaLimite && analysis.categoriaLimite !== 'NAO_DISPONIVEL') {
+    const recommendedValue = analysis.limiteSugerido && analysis.limiteSugerido !== 'NAO_DISPONIVEL'
+      ? analysis.limiteSugerido
+      : 'Valor nao disponivel';
+
     nextCards.push(
       buildMarciCard(
-        'Limite sugerido',
-        analysis.categoriaLimite,
-        analysis.limiteSugerido && analysis.limiteSugerido !== 'NAO_DISPONIVEL'
-          ? `Valor sugerido: ${analysis.limiteSugerido}`
-          : 'Tabela de limites nao disponivel no contexto.',
+        'Recomendacao MARCI',
+        `${analysis.categoriaLimite} - ${recommendedValue}`,
+        'Enquadramento sugerido a partir da analise integrada de GYRA+, SAP e politica interna.',
         { category: 'Analise', tone: 'insight', emphasis: 'wide' }
       )
     );
