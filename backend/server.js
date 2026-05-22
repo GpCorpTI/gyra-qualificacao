@@ -925,10 +925,7 @@ function buildMarciGyraDeterministicMessage(summary) {
     ].join(' '),
     sources: ['GYRA'],
     cards: buildMarciGyraBaseCards(summary),
-    suggestions: [
-      `Resuma o Gyra do CNPJ ${summary.cnpj}`,
-      `Quais pontos de atencao existem para o CNPJ ${summary.cnpj}?`,
-    ],
+    suggestions: [],
     metadata: {
       cnpj: summary.cnpj,
       reportId: summary.reportId,
@@ -945,9 +942,7 @@ function buildMarciGyraPendingMessage(summary) {
     answer: 'O GYRA+ ainda esta processando este relatorio. Eu ja deixei a consulta organizada abaixo; em alguns instantes, envie a verificacao novamente para buscar a leitura completa.',
     sources: ['GYRA'],
     cards: buildMarciGyraPendingCards(summary),
-    suggestions: [
-      `Verificar novamente o CNPJ ${summary.cnpj}`,
-    ],
+    suggestions: [],
     metadata: {
       cnpj: summary.cnpj,
       reportId: summary.reportId,
@@ -1176,12 +1171,7 @@ function buildMarciGyraClaudeMessage(summary, analysis) {
     answer: analysis.answer,
     sources: ['GYRA', 'Claude'],
     cards,
-    suggestions: analysis.suggestions?.length
-      ? analysis.suggestions
-      : [
-          `Resuma o Gyra do CNPJ ${summary.cnpj}`,
-          `Quais pontos de atencao existem para o CNPJ ${summary.cnpj}?`,
-        ],
+    suggestions: [],
     metadata: {
       cnpj: summary.cnpj,
       reportId: summary.reportId,
@@ -1246,15 +1236,7 @@ function buildMarciCombinedDeterministicMessage(summary, sapMessage, options = {
     answer: analyticalFallbackAnswer,
     sources: uniqueSources(['GYRA', ...(sapMessage?.sources || [])]),
     cards: [...gyraCards, ...sapCards],
-    suggestions: isPending
-      ? [
-          `Verificar novamente o CNPJ ${summary.cnpj}`,
-          `Como funciona o processamento do GYRA+?`,
-        ]
-      : [
-          `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
-          `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
-        ],
+    suggestions: [],
     metadata: {
       cnpj: summary.cnpj,
       reportId: summary.reportId,
@@ -1316,12 +1298,7 @@ async function buildMarciCombinedCreditResponse({ cnpj, policyId, userMessage })
       answer: analysis.answer,
       sources: uniqueSources(['GYRA', ...(sapMessage.sources || []), 'Claude']),
       cards,
-      suggestions: analysis.suggestions?.length
-        ? analysis.suggestions
-        : [
-            `Quais oportunidades existem para o CNPJ ${summary.cnpj}?`,
-            `Quais pontos de cautela existem para o CNPJ ${summary.cnpj}?`,
-          ],
+      suggestions: [],
       metadata: {
         cnpj: summary.cnpj,
         reportId: summary.reportId,

@@ -125,18 +125,6 @@
                     <span v-if="message.metadata.createdAt">Base: {{ formatDateTime(message.metadata.createdAt) }}</span>
                   </div>
 
-                  <div v-if="message.suggestions?.length" class="inline-suggestions">
-                    <button
-                      v-for="suggestion in message.suggestions"
-                      :key="`${message.id}-${suggestion}`"
-                      type="button"
-                      class="inline-suggestion"
-                      :disabled="loading"
-                      @click="applySuggestion(suggestion)"
-                    >
-                      {{ suggestion }}
-                    </button>
-                  </div>
                 </div>
               </article>
 
@@ -241,7 +229,6 @@ export default {
           metadata: {},
         },
       ],
-      starterPrompts: [],
     };
   },
   methods: {
@@ -269,15 +256,6 @@ export default {
         const el = this.$refs.messageList;
         if (el) {
           el.scrollTop = el.scrollHeight;
-        }
-      });
-    },
-    applySuggestion(suggestion) {
-      this.draft = String(suggestion || '').trim();
-      this.$nextTick(() => {
-        const input = this.$refs.composerInput;
-        if (input && typeof input.focus === 'function') {
-          input.focus();
         }
       });
     },
@@ -361,10 +339,7 @@ export default {
         text: errorMessage,
         sources: [],
         cards: [],
-        suggestions: [
-          'Quais consultas o MARCI consegue fazer?',
-          'Analisar credito do CNPJ 12.345.678/0001-99',
-        ],
+        suggestions: [],
         metadata: {},
       });
       this.scrollToBottom();
@@ -605,40 +580,6 @@ h1 {
   letter-spacing: 0;
 }
 
-.suggestion-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.suggestion-chip,
-.inline-suggestion {
-  padding: 10px 13px;
-  border-radius: 999px;
-  border: 1px solid rgba(217, 173, 31, 0.18);
-  background: rgba(255, 243, 204, 0.08);
-  color: #e8cb7a;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
-}
-
-.suggestion-chip:hover,
-.inline-suggestion:hover {
-  transform: translateY(-1px);
-  border-color: rgba(255, 218, 88, 0.42);
-  background: rgba(255, 243, 204, 0.12);
-}
-
-.suggestion-chip:disabled,
-.inline-suggestion:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-}
-
 .message-list {
   display: flex;
   flex-direction: column;
@@ -760,8 +701,7 @@ h1 {
 }
 
 .source-row,
-.message-meta,
-.inline-suggestions {
+.message-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
