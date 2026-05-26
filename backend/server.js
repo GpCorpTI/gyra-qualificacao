@@ -9,6 +9,7 @@ import pinoHttp from 'pino-http';
 import logger from './logger.js';
 import https from 'https';
 import hanaClient from '@sap/hana-client';
+import { buildAnaliseCreditoCompletaClipboardText } from './lib/credit-observation-text.mjs';
 
 
 
@@ -2382,7 +2383,7 @@ async function maybeUpdateSapCreditObservationFromGyra({
     return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, cardCodes: [], updatedCount: 0, failed: [] };
   }
 
-  const observationText = buildCreditSummaryObservationText(fullReport);
+  const observationText = buildAnaliseCreditoCompletaClipboardText(fullReport);
   const sap = await sapCreateSession();
   const updated = [];
   const failed = [];

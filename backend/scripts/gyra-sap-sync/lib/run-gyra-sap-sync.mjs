@@ -4,6 +4,7 @@ import axios from 'axios';
 import hanaClient from '@sap/hana-client';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { buildAnaliseCreditoCompletaClipboardText } from '../../../lib/credit-observation-text.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -861,7 +862,7 @@ export async function runGyraSapSync({
       const partnerDocuments = extractCurrentOwnerDocuments(report, candidate.cnpj, candidate.formattedCnpj);
       const partnerDocs = partnerDocuments.join(',');
       const shouldUpdateObservation = shouldUpdateSapObservationForStatus(statusKey);
-      const observationText = shouldUpdateObservation ? buildCreditSummaryObservationText(report) : '';
+      const observationText = shouldUpdateObservation ? buildAnaliseCreditoCompletaClipboardText(report) : '';
 
       const payload = buildSapUpdatePayload({
         statusKey,
@@ -896,7 +897,7 @@ export async function runGyraSapSync({
           console.log(`   [DRY-RUN] ${SAP_PARTNER_DOCS_FIELD} sem socios atuais com CPF identificados.`);
         }
         if (shouldUpdateObservation) {
-          console.log(`   [DRY-RUN] ${SAP_OBSERVATION_FIELD} receberia resumo da analise.`);
+          console.log(`   [DRY-RUN] ${SAP_OBSERVATION_FIELD} receberia analise completa.`);
         }
       } else {
         await patchBusinessPartner(sap, candidate.cardCode, payload);
@@ -910,7 +911,7 @@ export async function runGyraSapSync({
           console.log(`   [OK] ${SAP_PARTNER_DOCS_FIELD} sem socios atuais com CPF identificados.`);
         }
         if (shouldUpdateObservation) {
-          console.log(`   [OK] ${SAP_OBSERVATION_FIELD} atualizado com resumo da analise.`);
+          console.log(`   [OK] ${SAP_OBSERVATION_FIELD} atualizado com analise completa.`);
         }
       }
 
