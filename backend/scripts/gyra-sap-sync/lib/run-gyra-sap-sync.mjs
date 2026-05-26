@@ -831,7 +831,7 @@ export async function runGyraSapSync({
   console.log(
     searchMode === 'NULL_ONLY'
       ? `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}', CreateDate >= ${createdFromIso} e U_U_GYRA_SEARCH_DATE IS NULL.`
-      : `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}' e U_U_GYRA_SEARCH_DATE com mais de ${resolvedSearchIntervalDays} dia(s).`
+      : `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}', CreateDate >= ${createdFromIso} e U_U_GYRA_SEARCH_DATE com mais de ${resolvedSearchIntervalDays} dia(s).`
   );
 
   const candidates = await fetchCandidatesFromSap(searchMode, {
