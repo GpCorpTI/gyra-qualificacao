@@ -1,12 +1,30 @@
 # Gyra Qualificacao
 
-Aplicacao web para apoio ao fluxo de credito da GP, integrando consulta ao GYRA+, dados do SAP Business One e um assistente analitico chamado MARCI.
+Aplicacao web para apoio ao fluxo de credito da GP. O sistema centraliza consultas ao GYRA+, dados do SAP Business One e rotinas operacionais de analise para que o time consiga qualificar clientes, revisar liberacao de pedidos e consultar vinculos societarios em uma unica interface.
 
-O projeto possui duas frentes principais:
+## Overview
 
-- **Motor de Credito / Qualificar Cliente**: consulta CNPJ no GYRA+, aplica a leitura das politicas de credito e gera um resumo operacional para o time.
-- **MARCI**: assistente de decisao de credito que recebe perguntas por chat, consulta GYRA+ e SAP quando ha CNPJ, e retorna uma analise integrada com cards objetivos.
-- **Vinculos por CPF**: consulta o SAP pelo campo `U_partnerdocs` para localizar CNPJs vinculados a um CPF de socio.
+O Gyra Qualificacao e um painel interno de credito que conecta o frontend Vue com um backend Node/Express responsavel por falar com GYRA+, SAP HANA, SAP Service Layer, banco local e, quando configurado, Claude API para a analise do MARCI.
+
+Principais entregas do projeto:
+
+- **Motor de Credito / Qualificar Cliente**: consulta CNPJ no GYRA+, reaproveita relatorios recentes, interpreta politicas de credito e gera resumo operacional para copia, PDF/ODG e atualizacao SAP.
+- **Liberacao de Pedido**: fluxo dedicado para validar se um cliente pode ter pedido liberado, usando politica GYRA+ propria e integracao com webhook CRM B1.
+- **MARCI**: assistente analitico de decisao de credito que combina informacoes de GYRA+ e SAP para entregar uma leitura estruturada em cards, sem depender apenas de resposta manual do usuario.
+- **Vinculos por CPF**: consulta o SAP pelo campo `U_partnerdocs` para localizar CNPJs vinculados a CPF de socio.
+- **Automacoes SAP/GYRA**: scripts backend para processar clientes vindos de consultas HANA, acionar GYRA+ e atualizar campos de credito no SAP.
+
+Em producao, o backend serve a SPA em `/motorcredito/` e expoe a API em `/api`. O frontend usa chamadas same-origin para o backend, enquanto as integracoes externas ficam concentradas no servidor e nos scripts em `backend/scripts/`.
+
+## Modulos Principais
+
+| Modulo | Finalidade |
+| --- | --- |
+| Frontend Vue | Interface operacional do Motor, MARCI, Liberacao de Pedido, Vinculos por CPF e telas protegidas por PIN. |
+| Backend Express | API interna, autenticacao GYRA+, leitura de relatorios, consultas SAP/HANA, atualizacoes SAP e webhooks CRM B1. |
+| MARCI | Analise de credito baseada em dados GYRA+/SAP, com fallback quando GYRA+ esta pendente ou Claude nao esta configurado. |
+| Scripts `gyra-sap-sync` | Processamento direto SAP HANA -> GYRA+ -> SAP Service Layer para atualizar clientes em lote. |
+| Scripts `backend-motor-api` | Execucao do Motor pelo mesmo contrato usado pelo frontend: `/api/token`, `/api/report` e `/api/report/:id`. |
 
 ## Funcionalidades
 
