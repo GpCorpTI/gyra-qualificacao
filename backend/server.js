@@ -25,6 +25,7 @@ const GYRA_HTTP_TIMEOUT_MS = Number(process.env.GYRA_HTTP_TIMEOUT_MS || 30000);
 const DEFAULT_GYRA_POLICY_ID = process.env.GYRA_POLICY_ID || '67fd54db0b1b2e14e6e22e19';
 const SAP_TITULOS_PROCEDURE = process.env.SAP_TITULOS_PROCEDURE || '"SBO_GPIMPORTS"."spcGPHistTitulosCliente"';
 const SAP_PARTNER_DOCS_FIELD = process.env.SAP_PARTNER_DOCS_FIELD || 'U_partnerdocs';
+const SAP_OBSERVATION_FIELD = process.env.SAP_OBSERVATION_FIELD || 'FreeText';
 const CRM_B1_WEBHOOK_URL = process.env.CRM_B1_WEBHOOK_URL || '';
 const CRM_B1_WEBHOOK_TOKEN = process.env.CRM_B1_WEBHOOK_TOKEN || '';
 const CRM_B1_CREDIT_ANALYSIS_OPERATION = process.env.CRM_B1_CREDIT_ANALYSIS_OPERATION || 'credit_analysis_date_updated';
@@ -488,6 +489,232 @@ function extractCurrentOwnerDocuments(report, normalizedCnpj, formattedCnpj) {
   });
 
   return documents;
+}
+
+function findSummaryItemByTitles(report, titles = []) {
+  const wantedTitles = titles.map((title) => normalizePlainText(title));
+  const summary = findSection(report, 'SUMMARY');
+
+  for (const detail of summary?.sectionDetails || []) {
+    for (const value of Object.values(detail?.values || {})) {
+      if (value && typeof value === 'object' && wantedTitles.includes(normalizePlainText(value.title))) {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findAllNestedValuesByKey(obj, key) {
+  const out = [];
+
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(node, key)) out.push(node[key]);
+    Object.values(node).forEach(walk);
+  };
+
+  walk(obj);
+  return out;
+}
+
+function parseFrontendClipboardNumber(value) {
+  return parseFloat(String(value || '0').replace(/[^\d,]/g, '').replace(',', '.'));
+}
+
+function formatShortDateBR(value) {
+  if (!value) return 'N/D';
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleDateString('pt-BR');
+}
+
+function parseFoundationDate(value) {
+  if (!value) return null;
+  const text = String(value);
+
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) {
+    const [day, month, year] = text.slice(0, 10).split('/');
+    return new Date(`${year}-${month}-${day}`);
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeClipboardReason(text) {
+  const raw = String(text || '');
+  const low = raw.toLowerCase();
+  if (low.includes('score bureau') && low.includes('400')) return 'Score Bureau menor que 400';
+  if (low.includes('sócios com restrição') || low.includes('socios com restricao')) return 'Sócio com restrição';
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+}
+
+function extractEstimatedBillingForClipboard(report) {
+  return findSummaryItemByTitles(report, [
+    'Faturamento estimado',
+    'Faturamento presumido',
+  ])?.value || '';
+}
+
+function buildCreditSummaryObservationText(report) {
+  const sections = report?.sections || [];
+  const summary = findSection(report, 'SUMMARY');
+  const basic = findSection(report, 'BASIC_INFORMATION');
+  const relations = findSection(report, 'RELATIONS');
+
+  const getSummaryItem = (title) =>
+    summary?.sectionDetails
+      ?.flatMap((detail) => Object.values(detail.values || {}))
+      .find((value) => value?.title === title);
+
+  const score = getSummaryItem('Score Serasa')?.value || 'N/D';
+  const risco = report?.status?.value === 'REJECTED' ? 'Altíssimo' : 'Não crítico';
+  const telefoneCliente = report?.clientPhone || '';
+  const faturamentoEstimado = extractEstimatedBillingForClipboard(report);
+
+  const dataAnaliseMotor =
+    report?.values?.createdAt ??
+    report?.reportProgress?.finalizedAt ??
+    report?.businessDecisions?.policyDecision?.createdAt ??
+    null;
+
+  const dataFundacaoStr =
+    basic?.sectionDetails?.find((detail) => detail?.values?.response)?.values?.response?.dataFundacao;
+  const dataFundacao = parseFoundationDate(dataFundacaoStr);
+
+  let mesesAbertura = 'N/D';
+  let tempoAberturaTexto = 'N/D';
+  if (dataFundacao) {
+    mesesAbertura = Math.floor((Date.now() - dataFundacao.getTime()) / (1000 * 60 * 60 * 24 * 30));
+    const anos = Math.floor(mesesAbertura / 12);
+    const meses = mesesAbertura % 12;
+    if (anos === 0) tempoAberturaTexto = `${meses} meses`;
+    else if (meses === 0) tempoAberturaTexto = `${anos} anos`;
+    else tempoAberturaTexto = `${anos} anos e ${meses} meses`;
+  }
+
+  const pefin = getSummaryItem('Pefin');
+  const pefinValor = pefin?.value || 'R$ 0,00';
+  const pefinQtd = pefin?.subValue || '(0)';
+  const pefinRecente = pefin?.resolution || '';
+
+  const refin = getSummaryItem('Refin');
+  const refinValor = refin?.value || 'R$ 0,00';
+  const refinQtd = refin?.subValue || '(0)';
+  const refinRecente = refin?.resolution || '';
+
+  const protestos = getSummaryItem('Protestos');
+  const protestosValor = protestos?.value || 'R$ 0,00';
+  const protestosQtd = protestos?.subValue || '(0)';
+  const protestosRecente = protestos?.resolution || '';
+
+  const taxRegimes =
+    basic?.sectionDetails?.flatMap((detail) => detail?.values?.historyData?.company?.historyTaxRegimes || []);
+  let alteracaoRegimeTexto = 'Não identificadas';
+  if (taxRegimes && taxRegimes.length >= 2) {
+    const anterior = taxRegimes[taxRegimes.length - 2];
+    const atual = taxRegimes[taxRegimes.length - 1];
+    alteracaoRegimeTexto =
+      `${anterior?.taxRegime} > ${atual?.taxRegime} ` +
+      `Alteração no regime tributário ${formatShortDateBR(atual?.changeDate)}`;
+  }
+
+  const sociosRaw =
+    relations?.sectionDetails
+      ?.flatMap((detail) => detail?.values?.relationships || [])
+      ?.filter((relationship) => String(relationship?.relationshipLevel || '').includes('Sócio')) || [];
+
+  const seenSocios = new Set();
+  const socios = [];
+  for (const relationship of sociosRaw) {
+    const name = String(relationship?.name || '').trim();
+    const doc = String(relationship?.document || '').trim();
+    const key = `${name}|${doc}`;
+    if (seenSocios.has(key)) continue;
+    seenSocios.add(key);
+    socios.push({
+      name,
+      document: doc,
+      since: relationship?.formattedStartDate || 'N/D',
+    });
+  }
+
+  const sociosTexto = socios.length
+    ? socios.map((socio) =>
+        `Nome: ${socio.name || 'N/D'}\nCpf: ${socio.document || 'N/D'}\nSócio desde: ${socio.since}`
+      ).join('\n\n')
+    : 'Nome: N/D\nCpf: N/D\nSócio desde: N/D';
+
+  const motivosSet = new Set();
+  const pefinNum = parseFrontendClipboardNumber(pefinValor);
+  if (!Number.isNaN(pefinNum) && pefinNum > 0) {
+    motivosSet.add('Valor total em pefin nos últimos 3 anos maior que 0');
+  }
+
+  if (!Number.isNaN(Number(score)) && Number(score) < 400) {
+    motivosSet.add('Score Bureau menor que 400');
+  }
+
+  if (mesesAbertura !== 'N/D' && Number.isFinite(mesesAbertura) && mesesAbertura < 11) {
+    motivosSet.add('Tempo de abertura da empresa em meses menor que 11');
+  }
+
+  const protestosNum = parseFrontendClipboardNumber(protestosValor);
+  if (!Number.isNaN(protestosNum) && protestosNum > 0) {
+    motivosSet.add('Valor total em protestos nos últimos 3 anos');
+  }
+
+  const groups =
+    report?.policyRuleGroupResults ??
+    report?.values?.policyRuleGroupResults ??
+    report?.businessDecisions?.policyRuleGroupResults ??
+    [];
+  const groupsFallback = groups.length ? groups : (findAllNestedValuesByKey(report, 'policyRuleGroupResults').flat?.() || []);
+  const targetGroups = groupsFallback.filter((group) =>
+    normalizePlainText(group?.policyRuleGroup?.name || group?.name || '').includes('MOTIVOS REPROVACAO')
+  );
+  const groupsToRead = targetGroups.length ? targetGroups : groupsFallback;
+
+  for (const group of groupsToRead) {
+    for (const join of group?.policyRuleResultJoins || []) {
+      for (const rule of join?.policyRuleResults || []) {
+        if (rule?.status?.key === 'DENIED') {
+          const description = cleanDescription(rule?.descriptions || '').replace(/\s+/g, ' ').trim();
+          if (description) motivosSet.add(normalizeClipboardReason(description));
+        }
+      }
+    }
+  }
+
+  const motivos = Array.from(motivosSet);
+
+  return `
+Cadastro Rápido cliente a vista
+Vendedor: Marketing
+
+Score: ${score}
+Risco: ${risco}
+${faturamentoEstimado ? `Faturamento estimado: ${faturamentoEstimado}\n` : ''}${telefoneCliente ? `Telefone: ${telefoneCliente}\n` : ''}
+
+Fundação: ${formatShortDateBR(dataFundacao)} - ${tempoAberturaTexto}
+Possui restrição:
+Pefin ${pefinValor} ${pefinQtd} ${pefinRecente}
+Refin ${refinValor}${refinQtd} ${refinRecente}
+Protestos ${protestosValor}${protestosQtd} ${protestosRecente}
+
+Alterações:
+${alteracaoRegimeTexto}
+
+Sócios:
+${sociosTexto}
+
+Por que ficou à vista?
+${motivos.map((motivo) => `- ${motivo}`).join('\n')}
+
+Análise realizada pelo motor em: ${formatShortDateBR(dataAnaliseMotor)}
+`.trim();
 }
 
 function parseCurrencyBR(value) {
@@ -1894,6 +2121,35 @@ async function sapUpdatePartnerDocs(sap, cardCode, partnerDocs) {
   }
 }
 
+function sapBusinessPartnerPath(cardCode) {
+  const safeCardCode = String(cardCode || '').replace(/'/g, "''");
+  return `/BusinessPartners('${safeCardCode}')`;
+}
+
+async function sapGetBusinessPartnerField(sap, cardCode, fieldName) {
+  const resp = await sap.get(sapBusinessPartnerPath(cardCode), {
+    params: { $select: fieldName },
+  });
+
+  if (resp.status < 200 || resp.status >= 300) {
+    throw new Error(`SAP GET ${fieldName} failed (${resp.status}): ${JSON.stringify(resp.data)}`);
+  }
+
+  return resp.data?.[fieldName] || '';
+}
+
+async function sapUpdateBusinessPartnerField(sap, cardCode, fieldName, value) {
+  const resp = await sap.patch(
+    sapBusinessPartnerPath(cardCode),
+    { [fieldName]: value },
+    { headers: { 'If-Match': '*' } }
+  );
+
+  if (resp.status < 200 || resp.status >= 300) {
+    throw new Error(`SAP PATCH ${fieldName} failed (${resp.status}): ${JSON.stringify(resp.data)}`);
+  }
+}
+
 async function sapUpdateUltimaAnaliseCreditoForCodes(sap, cardCodes = [], isoDate) {
   const uniqueCardCodes = [...new Set(cardCodes.filter(Boolean))];
   const updated = [];
@@ -2078,6 +2334,96 @@ async function maybeUpdateSapPartnerDocsFromGyra({ fullReport, cnpjForLookup = '
     updatedCount: updateResult.updated.length,
     failed: updateResult.failed,
     partnerDocs,
+  };
+}
+
+function shouldUpdateSapObservationForStatus(statusFromReport = '') {
+  const normalized = normalizePlainText(statusFromReport);
+  return normalized === 'APPROVED' || normalized === 'REJECTED';
+}
+
+function buildSapObservationBlock({ reportId, text }) {
+  const safeReportId = String(reportId || 'sem-report');
+  return [
+    `[MOTOR_CREDITO:${safeReportId}:INICIO]`,
+    text,
+    `[MOTOR_CREDITO:${safeReportId}:FIM]`,
+  ].join('\n');
+}
+
+function mergeSapObservationText(currentValue = '', { reportId, text }) {
+  const currentText = String(currentValue || '').trim();
+  const reportMarker = `[MOTOR_CREDITO:${String(reportId || 'sem-report')}:INICIO]`;
+  if (currentText.includes(reportMarker)) return currentText;
+
+  const nextBlock = buildSapObservationBlock({ reportId, text });
+
+  return currentText ? `${currentText}\n\n${nextBlock}` : nextBlock;
+}
+
+async function maybeUpdateSapCreditObservationFromGyra({
+  fullReport,
+  statusFromReport,
+  cnpjForLookup = '',
+  reportId = null,
+}) {
+  if (!shouldUpdateSapObservationForStatus(statusFromReport)) {
+    return { status: 'skipped', reason: 'STATUS_NOT_FINAL_FOR_OBSERVATION', cardCode: null, cardCodes: [], updatedCount: 0, failed: [] };
+  }
+
+  const resolvedCnpj = String(cnpjForLookup || '').trim();
+  if (!resolvedCnpj) {
+    return { status: 'skipped', reason: 'NO_CNPJ_FOR_OBSERVATION', cardCode: null, cardCodes: [], updatedCount: 0, failed: [] };
+  }
+
+  const cardCodes = await getCardCodesByCNPJGroup_HANA(resolvedCnpj);
+  const cardCode = cardCodes[0] || null;
+  if (!cardCodes.length) {
+    return { status: 'skipped', reason: 'BP_NOT_FOUND_FOR_CNPJ', cardCode: null, cardCodes: [], updatedCount: 0, failed: [] };
+  }
+
+  const observationText = buildCreditSummaryObservationText(fullReport);
+  const sap = await sapCreateSession();
+  const updated = [];
+  const failed = [];
+
+  for (const code of [...new Set(cardCodes.filter(Boolean))]) {
+    try {
+      const currentValue = await sapGetBusinessPartnerField(sap, code, SAP_OBSERVATION_FIELD);
+      const nextValue = mergeSapObservationText(currentValue, { reportId, text: observationText });
+      await sapUpdateBusinessPartnerField(sap, code, SAP_OBSERVATION_FIELD, nextValue);
+      updated.push(code);
+    } catch (err) {
+      failed.push({ cardCode: code, error: err.message });
+    }
+  }
+
+  const status = failed.length
+    ? updated.length
+      ? 'partial'
+      : 'failed'
+    : 'success';
+
+  logger.info(
+    {
+      cnpj: resolvedCnpj,
+      reportId,
+      field: SAP_OBSERVATION_FIELD,
+      updated: updated.length,
+      total: cardCodes.length,
+    },
+    'sap.credit.observation.updated'
+  );
+
+  return {
+    status,
+    reason: status === 'success' ? null : 'SAP_OBSERVATION_UPDATE_FAILED',
+    field: SAP_OBSERVATION_FIELD,
+    cardCode,
+    cardCodes,
+    updatedCardCodes: updated,
+    updatedCount: updated.length,
+    failed,
   };
 }
 
@@ -2912,8 +3258,41 @@ app.get('/api/report/:id', async (req, res) => {
       res.set('X-SAP-PartnerDocs-Reason', 'SAP_PARTNERDOCS_UPDATE_ERROR');
     }
 
-    // 5) Update SAP status if Approved
-    const statusFromReport = fullReport?.status?.value || extractReportSummary(fullReport).statusValue;
+    // 5) Resolve final status and optional phone before SAP side effects.
+    const statusFromReport = fullReport?.status?.key || fullReport?.status?.value || extractReportSummary(fullReport).statusValue;
+    let clientPhone = null;
+    if (isCashOnlyCreditStatus(fullReport?.status?.key) || isCashOnlyCreditStatus(statusFromReport)) {
+      try {
+        clientPhone = await getClientPhoneByCNPJ_HANA(reportCnpjForLookup);
+      } catch (e) {
+        req.log?.warn?.({ err: e.message, reportId }, 'report.sap.phone.lookup.failed');
+      }
+    }
+    const reportForObservation = { ...fullReport, clientPhone };
+
+    // 6) Update SAP observation for final credit decisions.
+    try {
+      const observationUpdate = await maybeUpdateSapCreditObservationFromGyra({
+        fullReport: reportForObservation,
+        statusFromReport,
+        cnpjForLookup: reportCnpjForLookup,
+        reportId,
+      });
+      res.set('X-SAP-Observation-Update', observationUpdate.status);
+      if (observationUpdate.reason) {
+        res.set('X-SAP-Observation-Reason', observationUpdate.reason);
+      }
+      if (observationUpdate.cardCodes?.length) {
+        res.set('X-SAP-Observation-CardCodes', observationUpdate.cardCodes.join(','));
+        res.set('X-SAP-Observation-Updated-Count', String(observationUpdate.updatedCount || 0));
+      }
+    } catch (e) {
+      console.error(`❌ SAP ${SAP_OBSERVATION_FIELD} update failed:`, e.message);
+      res.set('X-SAP-Observation-Update', 'skipped');
+      res.set('X-SAP-Observation-Reason', 'SAP_OBSERVATION_UPDATE_ERROR');
+    }
+
+    // 7) Update SAP status if Approved
     try {
       const sapUpdate = await maybeUpdateSapUltimaAnaliseCredito({
         statusFromReport,
@@ -2935,17 +3314,8 @@ app.get('/api/report/:id', async (req, res) => {
       res.set('X-SAP-Update', 'skipped');
       res.set('X-SAP-Reason', 'SAP_UPDATE_ERROR');
     }
-
-    let clientPhone = null;
-    if (isCashOnlyCreditStatus(fullReport?.status?.key) || isCashOnlyCreditStatus(statusFromReport)) {
-      try {
-        clientPhone = await getClientPhoneByCNPJ_HANA(reportCnpjForLookup);
-      } catch (e) {
-        req.log?.warn?.({ err: e.message, reportId }, 'report.sap.phone.lookup.failed');
-      }
-    }
       
-    // 6) Return Gyra data + our DB timestamp
+    // 8) Return Gyra data + our DB timestamp
     const dur = Date.now() - start;
     req.log.info({ reportId, createdAt, updated: needsUpdate, ms: dur }, 'report.fetch');
     res.json({...fullReport, createdAt, clientPhone });

@@ -199,6 +199,7 @@ SAP_PASSWORD=
 
 SAP_TITULOS_PROCEDURE="SBO_GPIMPORTS"."spcGPHistTitulosCliente"
 SAP_PARTNER_DOCS_FIELD=U_partnerdocs
+SAP_OBSERVATION_FIELD=FreeText
 
 CRM_B1_WEBHOOK_URL=
 CRM_B1_WEBHOOK_TOKEN=
@@ -213,34 +214,74 @@ Observacao: `ANTHROPIC_API_KEY` e `CLAUDE_API_KEY` sao tratados como alternativa
 
 Observacao CRM B1: `CRM_B1_WEBHOOK_URL` pode ser informada completa, inclusive com `token` na query string. Nesse formato, `CRM_B1_WEBHOOK_TOKEN` e opcional.
 
-## Script SAP Para Chamar O Motor
+## Scripts SAP/GYRA Para Atualizar SAP
 
-O script `backend/scripts/run-motor-from-sap-query.mjs` consulta CNPJs no SAP HANA e chama a API local do Motor para cada CNPJ retornado.
+Os scripts em `backend/scripts/gyra-sap-sync/` consultam CNPJs no SAP HANA via `CRD7.TaxId0`, chamam diretamente a API do GYRA+ e atualizam o Business Partner no SAP Service Layer.
 
 Variaveis adicionais:
 
 ```env
-MOTOR_BASE_URL=http://localhost:8080
-MOTOR_SCRIPT_MODE=credit
-MOTOR_POLICY_ID=67fd54db0b1b2e14e6e22e19
-MOTOR_SECTOR=CRDT
+GYRA_POLICY_ID=67fd54db0b1b2e14e6e22e19
+GYRA_SOURCEPN_VALUE=MEGAGP
+GYRA_SEARCH_INTERVAL_DAYS=45
+GYRA_CREATED_FROM_DATE=2026-05-18
 MOTOR_REQUEST_DELAY_MS=500
 MOTOR_MAX_ROWS=0
-CNPJ_SOURCE_SQL=SELECT "TaxId0" AS "CNPJ" FROM CRD7 WHERE "TaxId0" IS NOT NULL
-CNPJ_COLUMN=CNPJ
+SAP_PARTNER_DOCS_FIELD=U_partnerdocs
+SAP_OBSERVATION_FIELD=FreeText
+CNPJ_SOURCE_SQL=
+CNPJ_SOURCE_SQL_NULL=
+CNPJ_SOURCE_SQL_STALE=
 ```
 
-Modos disponiveis:
+Entradas disponiveis:
 
-- `MOTOR_SCRIPT_MODE=credit`: chama `/api/token` e depois `/api/report`, usando `MOTOR_POLICY_ID`.
-- `MOTOR_SCRIPT_MODE=order-release`: chama `/api/order-release`, usando a politica fixa de liberacao de pedido.
+- `run-motor-from-sap-query-null.mjs`: processa clientes com `U_U_GYRA_SEARCH_DATE IS NULL`.
+- `run-motor-from-sap-query.mjs`: processa clientes com `U_U_GYRA_SEARCH_DATE` mais antiga que `GYRA_SEARCH_INTERVAL_DAYS`.
+
+Por padrao, todos filtram apenas clientes com `OCRD.CreateDate` a partir de `2026-05-18`. Use `GYRA_CREATED_FROM_DATE=YYYY-MM-DD` para forcar outro corte.
 
 Executar:
 
 ```powershell
 cd backend
-node scripts/run-motor-from-sap-query.mjs --dry-run
-node scripts/run-motor-from-sap-query.mjs
+node scripts/gyra-sap-sync/run-motor-from-sap-query-null.mjs --dry-run
+node scripts/gyra-sap-sync/run-motor-from-sap-query.mjs --dry-run
+```
+
+Wrappers para Agendador de Tarefas do Windows:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\Rafael.Bueno\gyra-qualificacao\backend\scripts\gyra-sap-sync\run-motor-from-sap-query-null-task.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\Rafael.Bueno\gyra-qualificacao\backend\scripts\gyra-sap-sync\run-motor-from-sap-query-task.ps1"
+```
+
+## Script HANA Para Acionar O Motor Via Backend
+
+O script `backend/scripts/backend-motor-api/run-motor-from-bloqueio-pendente.mjs` executa a procedure SAP HANA `spcBloqueioGPFIN04Pendente`, extrai `CardCode` e `CNPJ` dos retornos e chama o backend exatamente no fluxo usado pelo frontend de Analise de Credito:
+
+1. `POST /api/token`
+2. `POST /api/report` com `sector=CRDT`
+3. `GET /api/report/:id`
+
+Variaveis adicionais:
+
+```env
+MOTOR_API_BASE_URL=http://localhost:8080
+MOTOR_API_POLICY_ID=67fd54db0b1b2e14e6e22e19
+MOTOR_API_SECTOR=CRDT
+MOTOR_API_REQUEST_DELAY_MS=500
+MOTOR_API_MAX_ROWS=0
+MOTOR_API_TIMEOUT_MS=180000
+MOTOR_BLOQUEIO_PROCEDURE="SBO_GPIMPORTS"."spcBloqueioGPFIN04Pendente"
+```
+
+Executar:
+
+```powershell
+cd backend
+node scripts/backend-motor-api/run-motor-from-bloqueio-pendente.mjs --dry-run
+node scripts/backend-motor-api/run-motor-from-bloqueio-pendente.mjs
 ```
 
 ## Deploy / VM

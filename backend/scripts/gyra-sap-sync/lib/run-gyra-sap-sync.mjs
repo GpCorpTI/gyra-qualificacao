@@ -34,6 +34,7 @@ const {
   GYRA_PENDING_RETRY_DELAY_MS = '180000',
   GYRA_HTTP_TIMEOUT_MS = '120000',
   SAP_PARTNER_DOCS_FIELD = 'U_partnerdocs',
+  SAP_OBSERVATION_FIELD = 'FreeText',
   CNPJ_SOURCE_SQL,
   CNPJ_SOURCE_SQL_NULL,
   CNPJ_SOURCE_SQL_STALE,
@@ -107,6 +108,49 @@ function cleanDescription(text) {
   return String(text || '').replace(/\{\{.*?\}\}/g, '').replace(/\s+/g, ' ').trim();
 }
 
+function parseFrontendClipboardNumber(value) {
+  return parseFloat(String(value || '0').replace(/[^\d,]/g, '').replace(',', '.'));
+}
+
+function formatShortDateBR(value) {
+  if (!value) return 'N/D';
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleDateString('pt-BR');
+}
+
+function parseFoundationDate(value) {
+  if (!value) return null;
+  const text = String(value);
+
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) {
+    const [day, month, year] = text.slice(0, 10).split('/');
+    return new Date(`${year}-${month}-${day}`);
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeClipboardReason(text) {
+  const raw = String(text || '');
+  const low = raw.toLowerCase();
+  if (low.includes('score bureau') && low.includes('400')) return 'Score Bureau menor que 400';
+  if (low.includes('sócios com restrição') || low.includes('socios com restricao')) return 'Sócio com restrição';
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
+}
+
+function findAllNestedValuesByKey(obj, key) {
+  const out = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(node, key)) out.push(node[key]);
+    Object.values(node).forEach(walk);
+  };
+  walk(obj);
+  return out;
+}
+
 function extractPolicyRuleResults(report) {
   const results = [];
   const walk = (node) => {
@@ -158,6 +202,212 @@ function findResponseValues(report) {
     if (detail?.values?.response) return detail.values.response;
   }
   return {};
+}
+
+function findSummaryItemByTitles(report, titles = []) {
+  const normalizedTitles = titles.map(normalizePlainText);
+  const summary = findSection(report, 'SUMMARY');
+
+  for (const detail of summary?.sectionDetails || []) {
+    for (const value of Object.values(detail?.values || {})) {
+      if (value && typeof value === 'object' && normalizedTitles.includes(normalizePlainText(value.title))) {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractEstimatedBillingForClipboard(report) {
+  return findSummaryItemByTitles(report, [
+    'Faturamento estimado',
+    'Faturamento presumido',
+  ])?.value || '';
+}
+
+function buildCreditSummaryObservationText(report) {
+  const summary = findSection(report, 'SUMMARY');
+  const basic = findSection(report, 'BASIC_INFORMATION');
+  const relations = findSection(report, 'RELATIONS');
+
+  const getSummaryItem = (title) =>
+    summary?.sectionDetails
+      ?.flatMap((detail) => Object.values(detail.values || {}))
+      .find((value) => value?.title === title);
+
+  const score = getSummaryItem('Score Serasa')?.value || 'N/D';
+  const risco = report?.status?.value === 'REJECTED' ? 'Altíssimo' : 'Não crítico';
+  const telefoneCliente = report?.clientPhone || '';
+  const faturamentoEstimado = extractEstimatedBillingForClipboard(report);
+
+  const dataAnaliseMotor =
+    report?.values?.createdAt ??
+    report?.reportProgress?.finalizedAt ??
+    report?.businessDecisions?.policyDecision?.createdAt ??
+    null;
+
+  const dataFundacaoStr =
+    basic?.sectionDetails?.find((detail) => detail?.values?.response)?.values?.response?.dataFundacao;
+  const dataFundacao = parseFoundationDate(dataFundacaoStr);
+
+  let mesesAbertura = 'N/D';
+  let tempoAberturaTexto = 'N/D';
+  if (dataFundacao) {
+    mesesAbertura = Math.floor((Date.now() - dataFundacao.getTime()) / (1000 * 60 * 60 * 24 * 30));
+    const anos = Math.floor(mesesAbertura / 12);
+    const meses = mesesAbertura % 12;
+    if (anos === 0) tempoAberturaTexto = `${meses} meses`;
+    else if (meses === 0) tempoAberturaTexto = `${anos} anos`;
+    else tempoAberturaTexto = `${anos} anos e ${meses} meses`;
+  }
+
+  const pefin = getSummaryItem('Pefin');
+  const pefinValor = pefin?.value || 'R$ 0,00';
+  const pefinQtd = pefin?.subValue || '(0)';
+  const pefinRecente = pefin?.resolution || '';
+
+  const refin = getSummaryItem('Refin');
+  const refinValor = refin?.value || 'R$ 0,00';
+  const refinQtd = refin?.subValue || '(0)';
+  const refinRecente = refin?.resolution || '';
+
+  const protestos = getSummaryItem('Protestos');
+  const protestosValor = protestos?.value || 'R$ 0,00';
+  const protestosQtd = protestos?.subValue || '(0)';
+  const protestosRecente = protestos?.resolution || '';
+
+  const taxRegimes =
+    basic?.sectionDetails?.flatMap((detail) => detail?.values?.historyData?.company?.historyTaxRegimes || []);
+  let alteracaoRegimeTexto = 'Não identificadas';
+  if (taxRegimes && taxRegimes.length >= 2) {
+    const anterior = taxRegimes[taxRegimes.length - 2];
+    const atual = taxRegimes[taxRegimes.length - 1];
+    alteracaoRegimeTexto =
+      `${anterior?.taxRegime} > ${atual?.taxRegime} ` +
+      `Alteração no regime tributário ${formatShortDateBR(atual?.changeDate)}`;
+  }
+
+  const sociosRaw =
+    relations?.sectionDetails
+      ?.flatMap((detail) => detail?.values?.relationships || [])
+      ?.filter((relationship) => String(relationship?.relationshipLevel || '').includes('Sócio')) || [];
+
+  const seenSocios = new Set();
+  const socios = [];
+  for (const relationship of sociosRaw) {
+    const name = String(relationship?.name || '').trim();
+    const doc = String(relationship?.document || '').trim();
+    const key = `${name}|${doc}`;
+    if (seenSocios.has(key)) continue;
+    seenSocios.add(key);
+    socios.push({
+      name,
+      document: doc,
+      since: relationship?.formattedStartDate || 'N/D',
+    });
+  }
+
+  const sociosTexto = socios.length
+    ? socios.map((socio) =>
+        `Nome: ${socio.name || 'N/D'}\nCpf: ${socio.document || 'N/D'}\nSócio desde: ${socio.since}`
+      ).join('\n\n')
+    : 'Nome: N/D\nCpf: N/D\nSócio desde: N/D';
+
+  const motivosSet = new Set();
+  const pefinNum = parseFrontendClipboardNumber(pefinValor);
+  if (!Number.isNaN(pefinNum) && pefinNum > 0) {
+    motivosSet.add('Valor total em pefin nos últimos 3 anos maior que 0');
+  }
+
+  if (!Number.isNaN(Number(score)) && Number(score) < 400) {
+    motivosSet.add('Score Bureau menor que 400');
+  }
+
+  if (mesesAbertura !== 'N/D' && Number.isFinite(mesesAbertura) && mesesAbertura < 11) {
+    motivosSet.add('Tempo de abertura da empresa em meses menor que 11');
+  }
+
+  const protestosNum = parseFrontendClipboardNumber(protestosValor);
+  if (!Number.isNaN(protestosNum) && protestosNum > 0) {
+    motivosSet.add('Valor total em protestos nos últimos 3 anos');
+  }
+
+  const groups =
+    report?.policyRuleGroupResults ??
+    report?.values?.policyRuleGroupResults ??
+    report?.businessDecisions?.policyRuleGroupResults ??
+    [];
+  const groupsFallback = groups.length ? groups : (findAllNestedValuesByKey(report, 'policyRuleGroupResults').flat?.() || []);
+  const targetGroups = groupsFallback.filter((group) =>
+    normalizePlainText(group?.policyRuleGroup?.name || group?.name || '').includes('MOTIVOS REPROVACAO')
+  );
+  const groupsToRead = targetGroups.length ? targetGroups : groupsFallback;
+
+  for (const group of groupsToRead) {
+    for (const join of group?.policyRuleResultJoins || []) {
+      for (const rule of join?.policyRuleResults || []) {
+        if (rule?.status?.key === 'DENIED') {
+          const description = cleanDescription(rule?.descriptions || '').replace(/\s+/g, ' ').trim();
+          if (description) motivosSet.add(normalizeClipboardReason(description));
+        }
+      }
+    }
+  }
+
+  const motivos = Array.from(motivosSet);
+
+  return `
+Cadastro Rápido cliente a vista
+Vendedor: Marketing
+
+Score: ${score}
+Risco: ${risco}
+${faturamentoEstimado ? `Faturamento estimado: ${faturamentoEstimado}\n` : ''}${telefoneCliente ? `Telefone: ${telefoneCliente}\n` : ''}
+
+Fundação: ${formatShortDateBR(dataFundacao)} - ${tempoAberturaTexto}
+Possui restrição:
+Pefin ${pefinValor} ${pefinQtd} ${pefinRecente}
+Refin ${refinValor}${refinQtd} ${refinRecente}
+Protestos ${protestosValor}${protestosQtd} ${protestosRecente}
+
+Alterações:
+${alteracaoRegimeTexto}
+
+Sócios:
+${sociosTexto}
+
+Por que ficou à vista?
+${motivos.map((motivo) => `- ${motivo}`).join('\n')}
+
+Análise realizada pelo motor em: ${formatShortDateBR(dataAnaliseMotor)}
+`.trim();
+}
+
+function shouldUpdateSapObservationForStatus(statusFromReport = '') {
+  const normalized = normalizePlainText(statusFromReport);
+  return normalized === 'APPROVED' || normalized === 'REJECTED';
+}
+
+function buildSapObservationBlock({ reportId, text }) {
+  const safeReportId = String(reportId || 'sem-report');
+  return [
+    `[MOTOR_CREDITO:${safeReportId}:INICIO]`,
+    text,
+    `[MOTOR_CREDITO:${safeReportId}:FIM]`,
+  ].join('\n');
+}
+
+function mergeSapObservationText(currentValue = '', { reportId, text }) {
+  const safeReportId = String(reportId || 'sem-report').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockRegex = new RegExp(
+    `\\n?\\[MOTOR_CREDITO:${safeReportId}:INICIO\\][\\s\\S]*?\\[MOTOR_CREDITO:${safeReportId}:FIM\\]\\n?`,
+    'g'
+  );
+  const cleanedCurrent = String(currentValue || '').replace(blockRegex, '').trim();
+  const nextBlock = buildSapObservationBlock({ reportId, text });
+
+  return cleanedCurrent ? `${cleanedCurrent}\n\n${nextBlock}` : nextBlock;
 }
 
 function isCurrentQsaRelationship(relationship, companyDocument) {
@@ -314,18 +564,20 @@ function buildDefaultSourceSql(searchMode) {
     SELECT
       T0."CardCode",
       T0."CardName",
-      T0."LicTradNum" AS "CNPJ",
+      T1."TaxId0" AS "CNPJ",
       T0."U_sourcepn" AS "SourcePn",
       T0."CreateDate" AS "CreateDate",
       T0."U_U_GYRA_SEARCH_DATE" AS "GyraSearchDate"
     FROM OCRD T0
+    JOIN CRD7 T1 ON T1."CardCode" = T0."CardCode"
     WHERE T0."U_sourcepn" = ?
-      AND CAST(T0."CreateDate" AS DATE) >= TO_DATE(?, 'YYYY-MM-DD')
+      AND T1."TaxId0" IS NOT NULL
   `;
 
   if (searchMode === 'NULL_ONLY') {
     return `
       ${baseSelect}
+        AND CAST(T0."CreateDate" AS DATE) >= TO_DATE(?, 'YYYY-MM-DD')
         AND T0."U_U_GYRA_SEARCH_DATE" IS NULL
       ORDER BY T0."CardCode"
     `;
@@ -354,7 +606,7 @@ function resolveSourceSqlParams(searchMode, thresholdIso, createdFromIso) {
 
   if (usingCustomSql) return [];
   if (searchMode === 'NULL_ONLY') return [GYRA_SOURCEPN_VALUE, createdFromIso];
-  return [GYRA_SOURCEPN_VALUE, createdFromIso, thresholdIso];
+  return [GYRA_SOURCEPN_VALUE, thresholdIso];
 }
 
 async function fetchCandidatesFromSap(searchMode, { searchIntervalDays, createdFromDate } = {}) {
@@ -506,6 +758,18 @@ async function patchBusinessPartner(sap, cardCode, payload) {
   }
 }
 
+async function getBusinessPartnerField(sap, cardCode, fieldName) {
+  const response = await sap.get(`/BusinessPartners('${cardCode}')`, {
+    params: { $select: fieldName },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`GET ${cardCode}.${fieldName} failed (${response.status}): ${JSON.stringify(response.data)}`);
+  }
+
+  return response.data?.[fieldName] || '';
+}
+
 function buildSapUpdatePayload({
   statusKey,
   reportId,
@@ -567,7 +831,7 @@ export async function runGyraSapSync({
   console.log(
     searchMode === 'NULL_ONLY'
       ? `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}', CreateDate >= ${createdFromIso} e U_U_GYRA_SEARCH_DATE IS NULL.`
-      : `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}', CreateDate >= ${createdFromIso} e U_U_GYRA_SEARCH_DATE com mais de ${resolvedSearchIntervalDays} dia(s).`
+      : `[INFO] Filtro OCRD.U_sourcepn='${GYRA_SOURCEPN_VALUE}' e U_U_GYRA_SEARCH_DATE com mais de ${resolvedSearchIntervalDays} dia(s).`
   );
 
   const candidates = await fetchCandidatesFromSap(searchMode, {
@@ -596,6 +860,8 @@ export async function runGyraSapSync({
       const { creditLine, description } = extractPreApprovedCreditLine(report);
       const partnerDocuments = extractCurrentOwnerDocuments(report, candidate.cnpj, candidate.formattedCnpj);
       const partnerDocs = partnerDocuments.join(',');
+      const shouldUpdateObservation = shouldUpdateSapObservationForStatus(statusKey);
+      const observationText = shouldUpdateObservation ? buildCreditSummaryObservationText(report) : '';
 
       const payload = buildSapUpdatePayload({
         statusKey,
@@ -604,6 +870,15 @@ export async function runGyraSapSync({
         approvedCreditLine: creditLine,
         partnerDocs,
       });
+
+      if (shouldUpdateObservation) {
+        payload[SAP_OBSERVATION_FIELD] = dryRun
+          ? buildSapObservationBlock({ reportId, text: observationText })
+          : mergeSapObservationText(
+              await getBusinessPartnerField(sap, candidate.cardCode, SAP_OBSERVATION_FIELD),
+              { reportId, text: observationText }
+            );
+      }
 
       if (statusKey === 'APPROVED' && creditLine == null) {
         warned += 1;
@@ -620,6 +895,9 @@ export async function runGyraSapSync({
         } else {
           console.log(`   [DRY-RUN] ${SAP_PARTNER_DOCS_FIELD} sem socios atuais com CPF identificados.`);
         }
+        if (shouldUpdateObservation) {
+          console.log(`   [DRY-RUN] ${SAP_OBSERVATION_FIELD} receberia resumo da analise.`);
+        }
       } else {
         await patchBusinessPartner(sap, candidate.cardCode, payload);
         console.log(`   [OK] status=${statusKey} reportId=${reportId} retriedPending=${retriedPending}`);
@@ -630,6 +908,9 @@ export async function runGyraSapSync({
           console.log(`   [OK] ${SAP_PARTNER_DOCS_FIELD}=${partnerDocs}`);
         } else {
           console.log(`   [OK] ${SAP_PARTNER_DOCS_FIELD} sem socios atuais com CPF identificados.`);
+        }
+        if (shouldUpdateObservation) {
+          console.log(`   [OK] ${SAP_OBSERVATION_FIELD} atualizado com resumo da analise.`);
         }
       }
 
